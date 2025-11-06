@@ -104,7 +104,7 @@ jobs:
       # 8. Build container with Buildah
       - name: Build container with Buildah
         run: |
-          buildah bud -f Dockerfile.binary -t provider-temp .
+          buildah bud --isolation chroot -f Dockerfile.binary -t provider-temp .
 
       # 9. Push Docker images
       - name: Push Docker images

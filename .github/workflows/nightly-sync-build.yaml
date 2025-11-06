@@ -171,7 +171,7 @@ jobs:
 
       - name: Build container with Buildah
         run: |
-          buildah bud -f Dockerfile.binary -t provider-temp .
+          buildah bud --isolation chroot -f Dockerfile.binary -t provider-temp .
 
       - name: Push to Docker Hub
         run: |
@@ -257,7 +257,7 @@ jobs:
 
       - name: Build container with Buildah
         run: |
-          buildah bud -f Dockerfile.binary -t provider-temp .
+          buildah bud --isolation chroot -f Dockerfile.binary -t provider-temp .
 
       - name: Push to Docker Hub
         run: |
