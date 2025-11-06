@@ -186,12 +186,12 @@ jobs:
 
           # Append layer and push to registries
           crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:nightly --base alpine:3.18
-          crane tag ${DOCKERHUB_IMAGE}:nightly ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
-          crane tag ${DOCKERHUB_IMAGE}:nightly ${DOCKERHUB_IMAGE}:main
+          crane tag ${DOCKERHUB_IMAGE}:nightly nightly-${BUILD_DATE}
+          crane tag ${DOCKERHUB_IMAGE}:nightly main
 
           crane copy ${DOCKERHUB_IMAGE}:nightly ${GHCR_IMAGE}:nightly
-          crane tag ${GHCR_IMAGE}:nightly ${GHCR_IMAGE}:nightly-${BUILD_DATE}
-          crane tag ${GHCR_IMAGE}:nightly ${GHCR_IMAGE}:main
+          crane tag ${GHCR_IMAGE}:nightly nightly-${BUILD_DATE}
+          crane tag ${GHCR_IMAGE}:nightly main
 
   build-and-push-release:
     needs: sync-and-check
@@ -268,10 +268,10 @@ jobs:
 
           # Append layer and push to registries
           crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:${VERSION} --base alpine:3.18
-          crane tag ${DOCKERHUB_IMAGE}:${VERSION} ${DOCKERHUB_IMAGE}:latest
+          crane tag ${DOCKERHUB_IMAGE}:${VERSION} latest
 
           crane copy ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:${VERSION}
-          crane tag ${GHCR_IMAGE}:${VERSION} ${GHCR_IMAGE}:latest
+          crane tag ${GHCR_IMAGE}:${VERSION} latest
 
   summary:
     needs: [sync-and-check, build-and-push-main, build-and-push-release]
