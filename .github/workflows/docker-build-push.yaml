@@ -146,3 +146,56 @@ jobs:
           echo "## Published Images" >> $GITHUB_STEP_SUMMARY
           echo "### Docker Hub: \`${DOCKERHUB_IMAGE}\`" >> $GITHUB_STEP_SUMMARY
           echo "### GHCR: \`${GHCR_IMAGE}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check out tracking repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update README with published versions
+        run: |
+          # Determine what was published
+          if [ "${{ env.IS_TAG }}" == "true" ]; then
+            LATEST_TAG="${{ env.VERSION }}"
+            BUILD_DATE="$(date -u +'%Y-%m-%d %H:%M UTC')"
+            MAIN_SHA="N/A"
+          else
+            # For main branch builds, get latest tag from GitHub
+            LATEST_TAG=$(curl -s https://api.github.com/repos/${{ env.UPSTREAM_REPO }}/tags | jq -r '.[0].name')
+            BUILD_DATE="$(date -u +'%Y-%m-%d %H:%M UTC')"
+            MAIN_SHA="$(echo ${{ env.UPSTREAM_SHA }} | cut -c1-7)"
+          fi
+
+          # Create a badge-style status line
+          cat > /tmp/readme-update.txt << EOF
+
+          ---
+
+          **Last Updated**: ${BUILD_DATE}
+          **Latest Release**: \`${LATEST_TAG}\` | **Main Branch**: \`${MAIN_SHA}\`
+
+          EOF
+
+          # Check if the status section exists, if not append it
+          if grep -q "^---$" README.md && grep -q "Last Updated" README.md; then
+            # Replace existing status section (from first --- to end of file)
+            sed -i '/^---$/,$d' README.md
+            cat /tmp/readme-update.txt >> README.md
+          else
+            # Append new status section
+            cat /tmp/readme-update.txt >> README.md
+          fi
+
+      - name: Commit README updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          if git diff --cached --quiet; then
+            echo "No README changes to commit"
+          else
+            git commit -m "docs: update README with published versions [skip ci]"
+            git push
+            echo "✅ README updated with latest versions" >> $GITHUB_STEP_SUMMARY
+          fi
