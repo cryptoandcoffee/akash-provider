@@ -134,13 +134,17 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Install Buildah
+      - name: Install crane and create container
         run: |
+          # Install crane for registry operations
+          curl -L https://github.com/google/go-containerregistry/releases/download/v0.16.1/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /tmp
+          sudo mv /tmp/crane /usr/local/bin/
+
+          # Install buildah for creating the image locally
           if ! command -v buildah &> /dev/null; then
             sudo apt-get update
             sudo apt-get install -y buildah
           fi
-          buildah --version
 
       - name: Generate build metadata
         run: |
@@ -169,33 +173,27 @@ jobs:
           CMD ["run"]
           EOF
 
-      - name: Build container with Buildah
+      - name: Build and push container
         run: |
-          buildah bud --isolation chroot -f Dockerfile.binary -t provider-temp .
+          # Create a tar archive of the container using buildah unshare to work around permission issues
+          sudo buildah unshare -- buildah bud --isolation chroot -f Dockerfile.binary -t provider-temp .
 
-      - name: Push to Docker Hub
-        run: |
-          buildah login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" docker.io
+          # Save to OCI format
+          sudo buildah unshare -- buildah push provider-temp oci-archive:/tmp/provider.tar:provider-temp
 
-          buildah tag provider-temp ${DOCKERHUB_IMAGE}:nightly
-          buildah tag provider-temp ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
-          buildah tag provider-temp ${DOCKERHUB_IMAGE}:main
+          # Auth for crane
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-          buildah push ${DOCKERHUB_IMAGE}:nightly
-          buildah push ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
-          buildah push ${DOCKERHUB_IMAGE}:main
+          # Push to Docker Hub
+          crane push /tmp/provider.tar ${DOCKERHUB_IMAGE}:nightly
+          crane tag ${DOCKERHUB_IMAGE}:nightly ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
+          crane tag ${DOCKERHUB_IMAGE}:nightly ${DOCKERHUB_IMAGE}:main
 
-      - name: Push to GitHub Container Registry
-        run: |
-          buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
-
-          buildah tag provider-temp ${GHCR_IMAGE}:nightly
-          buildah tag provider-temp ${GHCR_IMAGE}:nightly-${BUILD_DATE}
-          buildah tag provider-temp ${GHCR_IMAGE}:main
-
-          buildah push ${GHCR_IMAGE}:nightly
-          buildah push ${GHCR_IMAGE}:nightly-${BUILD_DATE}
-          buildah push ${GHCR_IMAGE}:main
+          # Push to GHCR
+          crane push /tmp/provider.tar ${GHCR_IMAGE}:nightly
+          crane tag ${GHCR_IMAGE}:nightly ${GHCR_IMAGE}:nightly-${BUILD_DATE}
+          crane tag ${GHCR_IMAGE}:nightly ${GHCR_IMAGE}:main
 
   build-and-push-release:
     needs: sync-and-check
@@ -218,13 +216,17 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Install Buildah
+      - name: Install crane and create container
         run: |
+          # Install crane for registry operations
+          curl -L https://github.com/google/go-containerregistry/releases/download/v0.16.1/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /tmp
+          sudo mv /tmp/crane /usr/local/bin/
+
+          # Install buildah for creating the image locally
           if ! command -v buildah &> /dev/null; then
             sudo apt-get update
             sudo apt-get install -y buildah
           fi
-          buildah --version
 
       - name: Generate build metadata
         run: |

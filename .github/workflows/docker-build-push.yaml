@@ -48,14 +48,18 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      # 4. Install Buildah
-      - name: Install Buildah
+      # 4. Install crane and buildah
+      - name: Install crane and buildah
         run: |
+          # Install crane for registry operations
+          curl -L https://github.com/google/go-containerregistry/releases/download/v0.16.1/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /tmp
+          sudo mv /tmp/crane /usr/local/bin/
+
+          # Install buildah for creating the image locally
           if ! command -v buildah &> /dev/null; then
             sudo apt-get update
             sudo apt-get install -y buildah
           fi
-          buildah --version
 
       # 5. Generate build metadata
       - name: Generate build metadata
@@ -101,34 +105,27 @@ jobs:
           CMD ["run"]
           EOF
 
-      # 8. Build container with Buildah
-      - name: Build container with Buildah
+      # 8. Build and push container
+      - name: Build and push container
         run: |
-          buildah bud --isolation chroot -f Dockerfile.binary -t provider-temp .
+          # Create a tar archive of the container using buildah unshare to work around permission issues
+          sudo buildah unshare -- buildah bud --isolation chroot -f Dockerfile.binary -t provider-temp .
 
-      # 9. Push Docker images
-      - name: Push Docker images
-        run: |
-          # Login to registries
-          buildah login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" docker.io
-          buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
+          # Save to OCI format
+          sudo buildah unshare -- buildah push provider-temp oci-archive:/tmp/provider.tar:provider-temp
+
+          # Auth for crane
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
 
           if [ "${{ env.IS_TAG }}" == "true" ]; then
-            # Tag and push for releases
-            buildah tag provider-temp ${DOCKERHUB_IMAGE}:${VERSION}
-            buildah tag provider-temp ${DOCKERHUB_IMAGE}:latest
-            buildah tag provider-temp ${GHCR_IMAGE}:${VERSION}
-            buildah tag provider-temp ${GHCR_IMAGE}:latest
-
-            buildah push ${DOCKERHUB_IMAGE}:${VERSION}
-            buildah push ${DOCKERHUB_IMAGE}:latest
-            buildah push ${GHCR_IMAGE}:${VERSION}
-            buildah push ${GHCR_IMAGE}:latest
+            # Push for releases
+            crane push /tmp/provider.tar ${DOCKERHUB_IMAGE}:${VERSION}
+            crane tag ${DOCKERHUB_IMAGE}:${VERSION} ${DOCKERHUB_IMAGE}:latest
+            crane push /tmp/provider.tar ${GHCR_IMAGE}:${VERSION}
+            crane tag ${GHCR_IMAGE}:${VERSION} ${GHCR_IMAGE}:latest
           else
-            # Tag and push for main branch
-            buildah tag provider-temp ${DOCKERHUB_IMAGE}:main
-            buildah tag provider-temp ${GHCR_IMAGE}:main
-
-            buildah push ${DOCKERHUB_IMAGE}:main
-            buildah push ${GHCR_IMAGE}:main
+            # Push for main branch
+            crane push /tmp/provider.tar ${DOCKERHUB_IMAGE}:main
+            crane push /tmp/provider.tar ${GHCR_IMAGE}:main
           fi
