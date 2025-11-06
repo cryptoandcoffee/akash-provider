@@ -239,40 +239,39 @@ jobs:
 
           chmod +x ./bin/provider-services
 
-      - name: Create Dockerfile
+      - name: Build and push container
         run: |
-          cat > Dockerfile.binary << 'EOF'
-          FROM alpine:3.18
-          RUN apk add --no-cache ca-certificates
-          COPY ./bin/provider-services /usr/local/bin/provider-services
-          RUN chmod +x /usr/local/bin/provider-services
-          ENTRYPOINT ["provider-services"]
-          CMD ["run"]
+          # Create container filesystem manually
+          mkdir -p rootfs/usr/local/bin
+          cp ./bin/provider-services rootfs/usr/local/bin/
+          chmod +x rootfs/usr/local/bin/provider-services
+
+          # Create OCI image with crane
+          cat > config.json << EOF
+          {
+            "architecture": "amd64",
+            "os": "linux",
+            "config": {
+              "Entrypoint": ["/usr/local/bin/provider-services"],
+              "Cmd": ["run"],
+              "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
+            }
+          }
           EOF
 
-      - name: Build container with Buildah
-        run: |
-          buildah bud --isolation chroot -f Dockerfile.binary -t provider-temp .
+          # Create tar archive of filesystem
+          tar -C rootfs -czf layer.tar.gz .
 
-      - name: Push to Docker Hub
-        run: |
-          buildah login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" docker.io
+          # Auth for crane
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-          buildah tag provider-temp ${DOCKERHUB_IMAGE}:${VERSION}
-          buildah tag provider-temp ${DOCKERHUB_IMAGE}:latest
+          # Append layer and push to registries
+          crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:${VERSION} --base alpine:3.18
+          crane tag ${DOCKERHUB_IMAGE}:${VERSION} ${DOCKERHUB_IMAGE}:latest
 
-          buildah push ${DOCKERHUB_IMAGE}:${VERSION}
-          buildah push ${DOCKERHUB_IMAGE}:latest
-
-      - name: Push to GitHub Container Registry
-        run: |
-          buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
-
-          buildah tag provider-temp ${GHCR_IMAGE}:${VERSION}
-          buildah tag provider-temp ${GHCR_IMAGE}:latest
-
-          buildah push ${GHCR_IMAGE}:${VERSION}
-          buildah push ${GHCR_IMAGE}:latest
+          crane copy ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:${VERSION}
+          crane tag ${GHCR_IMAGE}:${VERSION} ${GHCR_IMAGE}:latest
 
   summary:
     needs: [sync-and-check, build-and-push-main, build-and-push-release]
