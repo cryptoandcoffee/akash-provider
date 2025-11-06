@@ -4,14 +4,10 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
-  repository_dispatch:
-    types: [upstream-sync, release-build]
   workflow_dispatch:
     inputs:
-      ref:
-        description: 'Git ref to build (branch or tag)'
+      upstream_ref:
+        description: 'Upstream git ref to build (branch, tag, or commit SHA)'
         required: false
         default: 'main'
       tag_as_latest:
@@ -24,48 +20,58 @@ env:
   DOCKER_CLI_EXPERIMENTAL: "enabled"
   DOCKERHUB_IMAGE: cryptoandcoffee/akash-network-provider
   GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/akash-network-provider
+  UPSTREAM_REPO: akash-network/provider
 
 jobs:
   build-and-push:
     runs-on: self-hosted
     steps:
-      # 1. Checkout code with full history
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.inputs.ref || github.event.client_payload.ref || github.ref }}
+      - name: Determine upstream ref to build
+        id: determine_ref
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            REF="${{ github.event.inputs.upstream_ref }}"
+          else
+            # For push events, build from upstream main
+            REF="main"
+          fi
+          echo "ref=${REF}" >> $GITHUB_OUTPUT
+          echo "📍 Building from upstream ref: ${REF}" >> $GITHUB_STEP_SUMMARY
 
-      # 2. Detect required Go version
+      - name: Clone upstream provider
+        run: |
+          git clone --depth 1 --branch ${{ steps.determine_ref.outputs.ref }} https://github.com/${{ env.UPSTREAM_REPO }}.git upstream || \
+          git clone https://github.com/${{ env.UPSTREAM_REPO }}.git upstream && cd upstream && git checkout ${{ steps.determine_ref.outputs.ref }}
+          cd upstream
+          echo "UPSTREAM_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "📦 Cloned upstream at $(git rev-parse --short HEAD)" >> $GITHUB_STEP_SUMMARY
+
       - name: Detect required Go version
+        working-directory: ./upstream
         run: |
           toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
           echo "GOVERSION=${toolchain}" >> $GITHUB_ENV
 
-      # 3. Set up Go
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GOVERSION }}
 
-      # 4. Install crane
       - name: Install crane
         run: |
-          # Install crane for registry operations
           curl -L https://github.com/google/go-containerregistry/releases/download/v0.16.1/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /tmp
           sudo mv /tmp/crane /usr/local/bin/
           crane version
 
-      # 5. Generate build metadata
       - name: Generate build metadata
         run: |
           echo "BUILD_DATE=$(date -u +'%Y%m%d')" >> $GITHUB_ENV
           echo "BUILD_TIMESTAMP=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
-          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "COMMIT_SHA=${{ env.UPSTREAM_SHA }}" >> $GITHUB_ENV
 
-          # Determine ref type
-          REF="${{ github.event.inputs.ref || github.event.client_payload.ref || github.ref }}"
-          if [[ "$REF" == refs/tags/* ]] || [[ "$REF" == v* ]]; then
+          # Determine ref type and version
+          REF="${{ steps.determine_ref.outputs.ref }}"
+          if [[ "$REF" == refs/tags/* ]] || [[ "$REF" =~ ^v[0-9] ]]; then
             if [[ "$REF" == refs/tags/* ]]; then
               VERSION=${REF#refs/tags/}
             else
@@ -73,12 +79,14 @@ jobs:
             fi
             echo "VERSION=${VERSION}" >> $GITHUB_ENV
             echo "IS_TAG=true" >> $GITHUB_ENV
+            echo "🏷️ Building version: ${VERSION}" >> $GITHUB_STEP_SUMMARY
           else
             echo "IS_TAG=false" >> $GITHUB_ENV
+            echo "🔨 Building from branch: ${REF}" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # 6. Build binary
       - name: Build binary
+        working-directory: ./upstream
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -tags "osusergo,netgo,static_build" \
@@ -88,8 +96,8 @@ jobs:
 
           chmod +x ./bin/provider-services
 
-      # 7. Build and push container
       - name: Build and push container
+        working-directory: ./upstream
         run: |
           # Create container filesystem manually
           mkdir -p rootfs/usr/local/bin
@@ -118,13 +126,23 @@ jobs:
 
           if [ "${{ env.IS_TAG }}" == "true" ]; then
             # Push for releases
+            echo "🚀 Pushing release: ${VERSION}" >> $GITHUB_STEP_SUMMARY
             crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:${VERSION} --base alpine:3.18
-            crane tag ${DOCKERHUB_IMAGE}:${VERSION} latest
-
             crane copy ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:${VERSION}
-            crane tag ${GHCR_IMAGE}:${VERSION} latest
+
+            if [ "${{ github.event.inputs.tag_as_latest }}" == "true" ]; then
+              crane tag ${DOCKERHUB_IMAGE}:${VERSION} latest
+              crane tag ${GHCR_IMAGE}:${VERSION} latest
+              echo "✅ Tagged as latest" >> $GITHUB_STEP_SUMMARY
+            fi
           else
             # Push for main branch
+            echo "🚀 Pushing main branch build" >> $GITHUB_STEP_SUMMARY
             crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:main --base alpine:3.18
             crane copy ${DOCKERHUB_IMAGE}:main ${GHCR_IMAGE}:main
           fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Published Images" >> $GITHUB_STEP_SUMMARY
+          echo "### Docker Hub: \`${DOCKERHUB_IMAGE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "### GHCR: \`${GHCR_IMAGE}\`" >> $GITHUB_STEP_SUMMARY
