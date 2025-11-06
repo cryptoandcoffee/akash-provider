@@ -48,38 +48,16 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      # 4. Install Docker client
-      - name: Install Docker client
+      # 4. Install Buildah
+      - name: Install Buildah
         run: |
-          if ! command -v docker &> /dev/null; then
-            curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-24.0.7.tgz -o docker.tgz
-            tar xzvf docker.tgz --strip 1 -C /usr/local/bin docker/docker
-            rm docker.tgz
+          if ! command -v buildah &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y buildah
           fi
-          docker version --format '{{.Client.Version}}'
+          buildah --version
 
-      # 5. Set up Docker Buildx with remote builder
-      - name: Set up Docker Buildx with remote builder
-        run: |
-          mkdir -p ~/.docker/cli-plugins/
-          curl -SL https://github.com/docker/buildx/releases/download/v0.11.2/buildx-v0.11.2.linux-amd64 -o ~/.docker/cli-plugins/docker-buildx
-          chmod +x ~/.docker/cli-plugins/docker-buildx
-
-          # Use docker-container driver which runs buildkit in a container
-          docker buildx create --use --name container-builder --driver docker-container || true
-          docker buildx use container-builder || true
-
-      # 6. Log in to Docker Hub
-      - name: Log in to Docker Hub
-        run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-
-      # 7. Log in to GitHub Container Registry
-      - name: Log in to GitHub Container Registry
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      # 8. Generate build metadata
+      # 5. Generate build metadata
       - name: Generate build metadata
         run: |
           echo "BUILD_DATE=$(date -u +'%Y%m%d')" >> $GITHUB_ENV
@@ -100,7 +78,7 @@ jobs:
             echo "IS_TAG=false" >> $GITHUB_ENV
           fi
 
-      # 9. Build binary
+      # 6. Build binary
       - name: Build binary
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
@@ -111,7 +89,7 @@ jobs:
 
           chmod +x ./bin/provider-services
 
-      # 10. Create Dockerfile
+      # 7. Create Dockerfile
       - name: Create Dockerfile
         run: |
           cat > Dockerfile.binary << 'EOF'
@@ -123,34 +101,34 @@ jobs:
           CMD ["run"]
           EOF
 
-      # 11. Build and push Docker images
-      - name: Build and push Docker images
+      # 8. Build container with Buildah
+      - name: Build container with Buildah
         run: |
+          buildah bud -f Dockerfile.binary -t provider-temp .
+
+      # 9. Push Docker images
+      - name: Push Docker images
+        run: |
+          # Login to registries
+          buildah login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" docker.io
+          buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
+
           if [ "${{ env.IS_TAG }}" == "true" ]; then
-            # Build and push for tags
-            docker buildx build \
-              --platform linux/amd64 \
-              --file ./Dockerfile.binary \
-              --tag ${DOCKERHUB_IMAGE}:${VERSION} \
-              --tag ${DOCKERHUB_IMAGE}:latest \
-              --tag ${GHCR_IMAGE}:${VERSION} \
-              --tag ${GHCR_IMAGE}:latest \
-              --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
-              --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
-              --label "org.opencontainers.image.created=${BUILD_TIMESTAMP}" \
-              --label "org.opencontainers.image.version=${VERSION}" \
-              --push \
-              .
+            # Tag and push for releases
+            buildah tag provider-temp ${DOCKERHUB_IMAGE}:${VERSION}
+            buildah tag provider-temp ${DOCKERHUB_IMAGE}:latest
+            buildah tag provider-temp ${GHCR_IMAGE}:${VERSION}
+            buildah tag provider-temp ${GHCR_IMAGE}:latest
+
+            buildah push ${DOCKERHUB_IMAGE}:${VERSION}
+            buildah push ${DOCKERHUB_IMAGE}:latest
+            buildah push ${GHCR_IMAGE}:${VERSION}
+            buildah push ${GHCR_IMAGE}:latest
           else
-            # Build and push for main branch
-            docker buildx build \
-              --platform linux/amd64 \
-              --file ./Dockerfile.binary \
-              --tag ${DOCKERHUB_IMAGE}:main \
-              --tag ${GHCR_IMAGE}:main \
-              --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
-              --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
-              --label "org.opencontainers.image.created=${BUILD_TIMESTAMP}" \
-              --push \
-              .
+            # Tag and push for main branch
+            buildah tag provider-temp ${DOCKERHUB_IMAGE}:main
+            buildah tag provider-temp ${GHCR_IMAGE}:main
+
+            buildah push ${DOCKERHUB_IMAGE}:main
+            buildah push ${GHCR_IMAGE}:main
           fi

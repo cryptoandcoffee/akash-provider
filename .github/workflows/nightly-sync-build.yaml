@@ -134,27 +134,13 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Install Docker client
+      - name: Install Buildah
         run: |
-          if ! command -v docker &> /dev/null; then
-            curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-24.0.7.tgz -o docker.tgz
-            tar xzvf docker.tgz --strip 1 -C /usr/local/bin docker/docker
-            rm docker.tgz
+          if ! command -v buildah &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y buildah
           fi
-          docker version --format '{{.Client.Version}}'
-
-      - name: Set up Docker Buildx with remote builder
-        run: |
-          mkdir -p ~/.docker/cli-plugins/
-          curl -SL https://github.com/docker/buildx/releases/download/v0.11.2/buildx-v0.11.2.linux-amd64 -o ~/.docker/cli-plugins/docker-buildx
-          chmod +x ~/.docker/cli-plugins/docker-buildx
-
-          # Create a buildx builder that uses remote buildkit
-          docker buildx create --use --name remote-builder --driver remote tcp://buildkit:1234 || true
-
-          # Alternative: use docker-container driver which runs buildkit in a container
-          docker buildx create --use --name container-builder --driver docker-container || true
-          docker buildx use container-builder || true
+          buildah --version
 
       - name: Generate build metadata
         run: |
@@ -183,25 +169,33 @@ jobs:
           CMD ["run"]
           EOF
 
-      - name: Log in to registries
+      - name: Build container with Buildah
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          buildah bud -f Dockerfile.binary -t provider-temp .
 
-      - name: Build and push Docker images
+      - name: Push to Docker Hub
         run: |
-          # Build with buildx using docker-container driver (doesn't need local daemon)
-          docker buildx build \
-            --platform linux/amd64 \
-            --file ./Dockerfile.binary \
-            --tag ${DOCKERHUB_IMAGE}:nightly \
-            --tag ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE} \
-            --tag ${DOCKERHUB_IMAGE}:main \
-            --tag ${GHCR_IMAGE}:nightly \
-            --tag ${GHCR_IMAGE}:nightly-${BUILD_DATE} \
-            --tag ${GHCR_IMAGE}:main \
-            --push \
-            .
+          buildah login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" docker.io
+
+          buildah tag provider-temp ${DOCKERHUB_IMAGE}:nightly
+          buildah tag provider-temp ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
+          buildah tag provider-temp ${DOCKERHUB_IMAGE}:main
+
+          buildah push ${DOCKERHUB_IMAGE}:nightly
+          buildah push ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
+          buildah push ${DOCKERHUB_IMAGE}:main
+
+      - name: Push to GitHub Container Registry
+        run: |
+          buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
+
+          buildah tag provider-temp ${GHCR_IMAGE}:nightly
+          buildah tag provider-temp ${GHCR_IMAGE}:nightly-${BUILD_DATE}
+          buildah tag provider-temp ${GHCR_IMAGE}:main
+
+          buildah push ${GHCR_IMAGE}:nightly
+          buildah push ${GHCR_IMAGE}:nightly-${BUILD_DATE}
+          buildah push ${GHCR_IMAGE}:main
 
   build-and-push-release:
     needs: sync-and-check
@@ -224,24 +218,13 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Install Docker client
+      - name: Install Buildah
         run: |
-          if ! command -v docker &> /dev/null; then
-            curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-24.0.7.tgz -o docker.tgz
-            tar xzvf docker.tgz --strip 1 -C /usr/local/bin docker/docker
-            rm docker.tgz
+          if ! command -v buildah &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y buildah
           fi
-          docker version --format '{{.Client.Version}}'
-
-      - name: Set up Docker Buildx with remote builder
-        run: |
-          mkdir -p ~/.docker/cli-plugins/
-          curl -SL https://github.com/docker/buildx/releases/download/v0.11.2/buildx-v0.11.2.linux-amd64 -o ~/.docker/cli-plugins/docker-buildx
-          chmod +x ~/.docker/cli-plugins/docker-buildx
-
-          # Use docker-container driver which runs buildkit in a container
-          docker buildx create --use --name container-builder --driver docker-container || true
-          docker buildx use container-builder || true
+          buildah --version
 
       - name: Generate build metadata
         run: |
@@ -272,23 +255,29 @@ jobs:
           CMD ["run"]
           EOF
 
-      - name: Log in to registries
+      - name: Build container with Buildah
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          buildah bud -f Dockerfile.binary -t provider-temp .
 
-      - name: Build and push Docker images
+      - name: Push to Docker Hub
         run: |
-          # Build with buildx using docker-container driver (doesn't need local daemon)
-          docker buildx build \
-            --platform linux/amd64 \
-            --file ./Dockerfile.binary \
-            --tag ${DOCKERHUB_IMAGE}:${VERSION} \
-            --tag ${DOCKERHUB_IMAGE}:latest \
-            --tag ${GHCR_IMAGE}:${VERSION} \
-            --tag ${GHCR_IMAGE}:latest \
-            --push \
-            .
+          buildah login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" docker.io
+
+          buildah tag provider-temp ${DOCKERHUB_IMAGE}:${VERSION}
+          buildah tag provider-temp ${DOCKERHUB_IMAGE}:latest
+
+          buildah push ${DOCKERHUB_IMAGE}:${VERSION}
+          buildah push ${DOCKERHUB_IMAGE}:latest
+
+      - name: Push to GitHub Container Registry
+        run: |
+          buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
+
+          buildah tag provider-temp ${GHCR_IMAGE}:${VERSION}
+          buildah tag provider-temp ${GHCR_IMAGE}:latest
+
+          buildah push ${GHCR_IMAGE}:${VERSION}
+          buildah push ${GHCR_IMAGE}:latest
 
   summary:
     needs: [sync-and-check, build-and-push-main, build-and-push-release]
