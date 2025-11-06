@@ -113,7 +113,7 @@ jobs:
             echo "⏭️ Skipping build - no changes detected" >> $GITHUB_STEP_SUMMARY
           fi
 
-  build-main:
+  build-binaries-main:
     needs: sync-and-check
     if: needs.sync-and-check.outputs.should_build == 'true'
     runs-on: self-hosted
@@ -134,8 +134,47 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Build binaries from source
+        run: |
+          # Set required environment variables
+          export AKASH_DIRENV_SET=1
+          export AP_ROOT=${{ github.workspace }}
+          export GOTOOLCHAIN=go${{ env.GOVERSION }}
+
+          # Build the binaries
+          make bins
+        env:
+          BUILD_TAGS: "osusergo,netgo,static_build"
+          GO_LINKMODE: external
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-services-main
+          path: ./bin/provider-services
+
+  docker-push-main:
+    needs: build-binaries-main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-services-main
+          path: ./bin/
+
+      - name: Generate build metadata
+        run: |
+          echo "BUILD_DATE=$(date -u +'%Y%m%d')" >> $GITHUB_ENV
+          echo "BUILD_TIMESTAMP=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
+          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          chmod +x ./bin/provider-services
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -153,86 +192,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate build metadata
+      - name: Create Dockerfile
         run: |
-          echo "BUILD_DATE=$(date -u +'%Y%m%d')" >> $GITHUB_ENV
-          echo "BUILD_TIMESTAMP=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
-          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          cat > Dockerfile.binary << 'EOF'
+          FROM alpine:3.18
+          RUN apk add --no-cache ca-certificates
+          COPY ./bin/provider-services /usr/local/bin/provider-services
+          RUN chmod +x /usr/local/bin/provider-services
+          ENTRYPOINT ["provider-services"]
+          CMD ["run"]
+          EOF
 
-      - name: Build Docker images
-        run: make docker-image
-        env:
-          RELEASE_DOCKER_IMAGE: build-temp/akash-provider
-          AKASH_DIRENV_SET: 1
-          AP_ROOT: ${{ github.workspace }}
-          GOTOOLCHAIN: go${{ env.GOVERSION }}
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.binary
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:nightly
+            ${{ env.DOCKERHUB_IMAGE }}:nightly-${{ env.BUILD_DATE }}
+            ${{ env.DOCKERHUB_IMAGE }}:main
+            ${{ env.GHCR_IMAGE }}:nightly
+            ${{ env.GHCR_IMAGE }}:nightly-${{ env.BUILD_DATE }}
+            ${{ env.GHCR_IMAGE }}:main
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
+            org.opencontainers.image.created=${{ env.BUILD_TIMESTAMP }}
 
-      - name: Tag and push nightly images
-        run: |
-          # Tag for nightly with date
-          NIGHTLY_DATE_TAG="nightly-${{ env.BUILD_DATE }}"
-
-          # Tag for Docker Hub
-          docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:nightly-amd64
-          docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:nightly-arm64
-          docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-amd64
-          docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
-          docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:main-amd64
-          docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:main-arm64
-
-          # Tag for GHCR
-          docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:nightly-amd64
-          docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:nightly-arm64
-          docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-amd64
-          docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
-          docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:main-amd64
-          docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:main-arm64
-
-          # Push to Docker Hub
-          docker push ${DOCKERHUB_IMAGE}:nightly-amd64
-          docker push ${DOCKERHUB_IMAGE}:nightly-arm64
-          docker push ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-amd64
-          docker push ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
-          docker push ${DOCKERHUB_IMAGE}:main-amd64
-          docker push ${DOCKERHUB_IMAGE}:main-arm64
-
-          # Push to GHCR
-          docker push ${GHCR_IMAGE}:nightly-amd64
-          docker push ${GHCR_IMAGE}:nightly-arm64
-          docker push ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-amd64
-          docker push ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
-          docker push ${GHCR_IMAGE}:main-amd64
-          docker push ${GHCR_IMAGE}:main-arm64
-
-          # Create multi-arch manifests for Docker Hub
-          docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:nightly \
-            ${DOCKERHUB_IMAGE}:nightly-amd64 \
-            ${DOCKERHUB_IMAGE}:nightly-arm64
-
-          docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG} \
-            ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-amd64 \
-            ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
-
-          docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:main \
-            ${DOCKERHUB_IMAGE}:main-amd64 \
-            ${DOCKERHUB_IMAGE}:main-arm64
-
-          # Create multi-arch manifests for GHCR
-          docker buildx imagetools create -t ${GHCR_IMAGE}:nightly \
-            ${GHCR_IMAGE}:nightly-amd64 \
-            ${GHCR_IMAGE}:nightly-arm64
-
-          docker buildx imagetools create -t ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG} \
-            ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-amd64 \
-            ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
-
-          docker buildx imagetools create -t ${GHCR_IMAGE}:main \
-            ${GHCR_IMAGE}:main-amd64 \
-            ${GHCR_IMAGE}:main-arm64
-
-          echo "✅ Pushed nightly builds with tags: nightly, ${NIGHTLY_DATE_TAG}, main" >> $GITHUB_STEP_SUMMARY
-
-  build-release:
+  build-binaries-release:
     needs: sync-and-check
     if: needs.sync-and-check.outputs.latest_tag != '' && needs.sync-and-check.outputs.should_build == 'true'
     runs-on: self-hosted
@@ -253,8 +243,50 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Build binaries from source
+        run: |
+          # Set required environment variables
+          export AKASH_DIRENV_SET=1
+          export AP_ROOT=${{ github.workspace }}
+          export GOTOOLCHAIN=go${{ env.GOVERSION }}
+
+          # Build the binaries
+          make bins
+        env:
+          BUILD_TAGS: "osusergo,netgo,static_build"
+          GO_LINKMODE: external
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-services-release
+          path: ./bin/provider-services
+
+  docker-push-release:
+    needs: [sync-and-check, build-binaries-release]
+    if: needs.sync-and-check.outputs.latest_tag != '' && needs.sync-and-check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.sync-and-check.outputs.latest_tag }}
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-services-release
+          path: ./bin/
+
+      - name: Generate build metadata
+        run: |
+          echo "BUILD_DATE=$(date -u +'%Y%m%d')" >> $GITHUB_ENV
+          echo "BUILD_TIMESTAMP=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
+          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          chmod +x ./bin/provider-services
+          VERSION="${{ needs.sync-and-check.outputs.latest_tag }}"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -272,64 +304,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Docker images
-        run: make docker-image
-        env:
-          RELEASE_DOCKER_IMAGE: build-temp/akash-provider
-          AKASH_DIRENV_SET: 1
-          AP_ROOT: ${{ github.workspace }}
-          GOTOOLCHAIN: go${{ env.GOVERSION }}
-
-      - name: Tag and push release images
+      - name: Create Dockerfile
         run: |
-          VERSION="${{ needs.sync-and-check.outputs.latest_tag }}"
+          cat > Dockerfile.binary << 'EOF'
+          FROM alpine:3.18
+          RUN apk add --no-cache ca-certificates
+          COPY ./bin/provider-services /usr/local/bin/provider-services
+          RUN chmod +x /usr/local/bin/provider-services
+          ENTRYPOINT ["provider-services"]
+          CMD ["run"]
+          EOF
 
-          # Tag for Docker Hub
-          docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:${VERSION}-amd64
-          docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:${VERSION}-arm64
-          docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:latest-amd64
-          docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:latest-arm64
-
-          # Tag for GHCR
-          docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:${VERSION}-amd64
-          docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:${VERSION}-arm64
-          docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:latest-amd64
-          docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:latest-arm64
-
-          # Push to Docker Hub
-          docker push ${DOCKERHUB_IMAGE}:${VERSION}-amd64
-          docker push ${DOCKERHUB_IMAGE}:${VERSION}-arm64
-          docker push ${DOCKERHUB_IMAGE}:latest-amd64
-          docker push ${DOCKERHUB_IMAGE}:latest-arm64
-
-          # Push to GHCR
-          docker push ${GHCR_IMAGE}:${VERSION}-amd64
-          docker push ${GHCR_IMAGE}:${VERSION}-arm64
-          docker push ${GHCR_IMAGE}:latest-amd64
-          docker push ${GHCR_IMAGE}:latest-arm64
-
-          # Create multi-arch manifests for Docker Hub
-          docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:${VERSION} \
-            ${DOCKERHUB_IMAGE}:${VERSION}-amd64 \
-            ${DOCKERHUB_IMAGE}:${VERSION}-arm64
-
-          docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:latest \
-            ${DOCKERHUB_IMAGE}:latest-amd64 \
-            ${DOCKERHUB_IMAGE}:latest-arm64
-
-          # Create multi-arch manifests for GHCR
-          docker buildx imagetools create -t ${GHCR_IMAGE}:${VERSION} \
-            ${GHCR_IMAGE}:${VERSION}-amd64 \
-            ${GHCR_IMAGE}:${VERSION}-arm64
-
-          docker buildx imagetools create -t ${GHCR_IMAGE}:latest \
-            ${GHCR_IMAGE}:latest-amd64 \
-            ${GHCR_IMAGE}:latest-arm64
-
-          echo "✅ Pushed release ${VERSION} with latest tag" >> $GITHUB_STEP_SUMMARY
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.binary
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:${{ env.VERSION }}
+            ${{ env.DOCKERHUB_IMAGE }}:latest
+            ${{ env.GHCR_IMAGE }}:${{ env.VERSION }}
+            ${{ env.GHCR_IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
+            org.opencontainers.image.created=${{ env.BUILD_TIMESTAMP }}
+            org.opencontainers.image.version=${{ env.VERSION }}
 
   summary:
-    needs: [sync-and-check, build-main, build-release]
+    needs: [sync-and-check, build-binaries-main, docker-push-main, build-binaries-release, docker-push-release]
     if: always()
     runs-on: self-hosted
     steps:
@@ -349,8 +354,10 @@ jobs:
 
           echo "## Build Status" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.sync-and-check.outputs.should_build }}" == "true" ]; then
-            echo "- Main build: ${{ needs.build-main.result }}" >> $GITHUB_STEP_SUMMARY
-            echo "- Release build: ${{ needs.build-release.result }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Main binary build: ${{ needs.build-binaries-main.result }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Main Docker push: ${{ needs.docker-push-main.result }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Release binary build: ${{ needs.build-binaries-release.result }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Release Docker push: ${{ needs.docker-push-release.result }}" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "## Published Images" >> $GITHUB_STEP_SUMMARY
             echo "### Docker Hub" >> $GITHUB_STEP_SUMMARY
