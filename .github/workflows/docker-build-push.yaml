@@ -56,11 +56,16 @@ jobs:
           export AP_ROOT=${{ github.workspace }}
           export GOTOOLCHAIN=go${{ env.GOVERSION }}
 
-          # Build the binaries
-          make bins
+          # Build the binaries directly with go build
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -tags "osusergo,netgo,static_build" \
+            -ldflags="-s -w -extldflags=-static" \
+            -o ./bin/provider-services \
+            ./cmd/provider-services
         env:
-          BUILD_TAGS: "osusergo,netgo,static_build"
-          GO_LINKMODE: external
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
 
       # 5. Upload binary artifact
       - name: Upload binary artifact
