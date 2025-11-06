@@ -48,28 +48,22 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      # 4. Setup direnv for environment management
-      - name: Setup direnv
-        uses: HatsuneMiku3939/direnv-action@v1
-        with:
-          masks: ''
-
-      # 5. Set up QEMU for multi-arch builds
+      # 4. Set up QEMU for multi-arch builds
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # 6. Set up Docker Buildx
+      # 5. Set up Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 7. Login to Docker Hub
+      # 6. Login to Docker Hub
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 8. Login to GitHub Container Registry
+      # 7. Login to GitHub Container Registry
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -77,13 +71,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 9. Build Docker images locally
+      # 8. Build Docker images locally
       - name: Build Docker images
         run: make docker-image
         env:
           RELEASE_DOCKER_IMAGE: build-temp/akash-provider
+          AKASH_DIRENV_SET: 1
+          AP_ROOT: ${{ github.workspace }}
+          GOTOOLCHAIN: go${{ env.GOVERSION }}
 
-      # 10. Tag and push images
+      # 9. Tag and push images
       - name: Tag and push images
         run: |
           # Determine tags based on ref

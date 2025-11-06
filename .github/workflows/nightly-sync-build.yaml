@@ -134,11 +134,6 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Setup direnv
-        uses: HatsuneMiku3939/direnv-action@v1
-        with:
-          masks: ''
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -168,6 +163,9 @@ jobs:
         run: make docker-image
         env:
           RELEASE_DOCKER_IMAGE: build-temp/akash-provider
+          AKASH_DIRENV_SET: 1
+          AP_ROOT: ${{ github.workspace }}
+          GOTOOLCHAIN: go${{ env.GOVERSION }}
 
       - name: Tag and push nightly images
         run: |
@@ -255,11 +253,6 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Setup direnv
-        uses: HatsuneMiku3939/direnv-action@v1
-        with:
-          masks: ''
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -283,6 +276,9 @@ jobs:
         run: make docker-image
         env:
           RELEASE_DOCKER_IMAGE: build-temp/akash-provider
+          AKASH_DIRENV_SET: 1
+          AP_ROOT: ${{ github.workspace }}
+          GOTOOLCHAIN: go${{ env.GOVERSION }}
 
       - name: Tag and push release images
         run: |
