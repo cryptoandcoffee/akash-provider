@@ -27,7 +27,7 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       # 1. Checkout code with full history
       - name: Checkout code
@@ -48,26 +48,39 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      # 4. Set up Docker Buildx
+      # 4. Install Docker client
+      - name: Install Docker client
+        run: |
+          if ! command -v docker &> /dev/null; then
+            curl -fsSL https://get.docker.com -o get-docker.sh
+            sh get-docker.sh --dry-run
+            sudo sh get-docker.sh
+            rm get-docker.sh
+          fi
+          docker version --format '{{.Client.Version}}'
+
+      # 5. Set up Docker Buildx
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        run: |
+          if ! docker buildx version &> /dev/null; then
+            mkdir -p ~/.docker/cli-plugins/
+            curl -SL https://github.com/docker/buildx/releases/download/v0.11.2/buildx-v0.11.2.linux-amd64 -o ~/.docker/cli-plugins/docker-buildx
+            chmod +x ~/.docker/cli-plugins/docker-buildx
+          fi
+          docker buildx create --use --name mybuilder --driver docker-container || true
+          docker buildx use mybuilder || true
 
-      # 5. Log in to Docker Hub
+      # 6. Log in to Docker Hub
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      # 6. Log in to GitHub Container Registry
+      # 7. Log in to GitHub Container Registry
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      # 7. Generate build metadata
+      # 8. Generate build metadata
       - name: Generate build metadata
         run: |
           echo "BUILD_DATE=$(date -u +'%Y%m%d')" >> $GITHUB_ENV
@@ -88,7 +101,7 @@ jobs:
             echo "IS_TAG=false" >> $GITHUB_ENV
           fi
 
-      # 8. Build binary
+      # 9. Build binary
       - name: Build binary
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
@@ -99,7 +112,7 @@ jobs:
 
           chmod +x ./bin/provider-services
 
-      # 9. Create Dockerfile
+      # 10. Create Dockerfile
       - name: Create Dockerfile
         run: |
           cat > Dockerfile.binary << 'EOF'
@@ -111,39 +124,34 @@ jobs:
           CMD ["run"]
           EOF
 
-      # 10. Build and push Docker images for tags
-      - name: Build and push Docker images for tags
-        if: env.IS_TAG == 'true'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.binary
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.DOCKERHUB_IMAGE }}:${{ env.VERSION }}
-            ${{ env.DOCKERHUB_IMAGE }}:latest
-            ${{ env.GHCR_IMAGE }}:${{ env.VERSION }}
-            ${{ env.GHCR_IMAGE }}:latest
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
-            org.opencontainers.image.created=${{ env.BUILD_TIMESTAMP }}
-            org.opencontainers.image.version=${{ env.VERSION }}
-
-      # 11. Build and push Docker images for main
-      - name: Build and push Docker images for main
-        if: env.IS_TAG == 'false'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.binary
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.DOCKERHUB_IMAGE }}:main
-            ${{ env.GHCR_IMAGE }}:main
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
-            org.opencontainers.image.created=${{ env.BUILD_TIMESTAMP }}
+      # 11. Build and push Docker images
+      - name: Build and push Docker images
+        run: |
+          if [ "${{ env.IS_TAG }}" == "true" ]; then
+            # Build and push for tags
+            docker buildx build \
+              --platform linux/amd64 \
+              --file ./Dockerfile.binary \
+              --tag ${DOCKERHUB_IMAGE}:${VERSION} \
+              --tag ${DOCKERHUB_IMAGE}:latest \
+              --tag ${GHCR_IMAGE}:${VERSION} \
+              --tag ${GHCR_IMAGE}:latest \
+              --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+              --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
+              --label "org.opencontainers.image.created=${BUILD_TIMESTAMP}" \
+              --label "org.opencontainers.image.version=${VERSION}" \
+              --push \
+              .
+          else
+            # Build and push for main branch
+            docker buildx build \
+              --platform linux/amd64 \
+              --file ./Dockerfile.binary \
+              --tag ${DOCKERHUB_IMAGE}:main \
+              --tag ${GHCR_IMAGE}:main \
+              --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+              --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
+              --label "org.opencontainers.image.created=${BUILD_TIMESTAMP}" \
+              --push \
+              .
+          fi
