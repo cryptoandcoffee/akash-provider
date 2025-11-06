@@ -52,23 +52,22 @@ jobs:
       - name: Install Docker client
         run: |
           if ! command -v docker &> /dev/null; then
-            curl -fsSL https://get.docker.com -o get-docker.sh
-            sh get-docker.sh --dry-run
-            sudo sh get-docker.sh
-            rm get-docker.sh
+            curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-24.0.7.tgz -o docker.tgz
+            tar xzvf docker.tgz --strip 1 -C /usr/local/bin docker/docker
+            rm docker.tgz
           fi
           docker version --format '{{.Client.Version}}'
 
-      # 5. Set up Docker Buildx
-      - name: Set up Docker Buildx
+      # 5. Set up Docker Buildx with remote builder
+      - name: Set up Docker Buildx with remote builder
         run: |
-          if ! docker buildx version &> /dev/null; then
-            mkdir -p ~/.docker/cli-plugins/
-            curl -SL https://github.com/docker/buildx/releases/download/v0.11.2/buildx-v0.11.2.linux-amd64 -o ~/.docker/cli-plugins/docker-buildx
-            chmod +x ~/.docker/cli-plugins/docker-buildx
-          fi
-          docker buildx create --use --name mybuilder --driver docker-container || true
-          docker buildx use mybuilder || true
+          mkdir -p ~/.docker/cli-plugins/
+          curl -SL https://github.com/docker/buildx/releases/download/v0.11.2/buildx-v0.11.2.linux-amd64 -o ~/.docker/cli-plugins/docker-buildx
+          chmod +x ~/.docker/cli-plugins/docker-buildx
+
+          # Use docker-container driver which runs buildkit in a container
+          docker buildx create --use --name container-builder --driver docker-container || true
+          docker buildx use container-builder || true
 
       # 6. Log in to Docker Hub
       - name: Log in to Docker Hub
