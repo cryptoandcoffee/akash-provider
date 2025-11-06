@@ -1,0 +1,379 @@
+name: Nightly Sync and Build
+
+on:
+  schedule:
+    # Run every night at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force build even if no upstream changes'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  UPSTREAM_REPO: akash-network/provider
+  DOCKERHUB_IMAGE: cryptoandcoffee/akash-network-provider
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/akash-network-provider
+  DOCKER_CLI_EXPERIMENTAL: "enabled"
+
+jobs:
+  sync-and-check:
+    runs-on: ubuntu-latest
+    outputs:
+      main_changed: ${{ steps.sync_main.outputs.changed }}
+      new_tags: ${{ steps.sync_tags.outputs.new_tags }}
+      latest_tag: ${{ steps.sync_tags.outputs.latest_tag }}
+      should_build: ${{ steps.determine_build.outputs.should_build }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git || true
+          git remote set-url upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
+          git fetch upstream --tags --force
+
+      - name: Sync main branch
+        id: sync_main
+        run: |
+          echo "Checking upstream main branch..."
+          LOCAL_MAIN=$(git rev-parse origin/main)
+          UPSTREAM_MAIN=$(git rev-parse upstream/main)
+
+          if [ "$LOCAL_MAIN" != "$UPSTREAM_MAIN" ]; then
+            echo "Main branch has upstream changes"
+            echo "changed=true" >> $GITHUB_OUTPUT
+
+            # Sync main branch
+            git checkout main
+            git reset --hard upstream/main
+            git push origin main --force-with-lease
+
+            echo "✅ Synced main branch from upstream" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Main branch is up to date"
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ Main branch already up to date" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Sync tags
+        id: sync_tags
+        run: |
+          echo "Syncing tags from upstream..."
+
+          # Get all upstream tags
+          UPSTREAM_TAGS=$(git ls-remote --tags upstream | grep -v '{}' | cut -f2 | sed 's|refs/tags/||' | sort -V)
+          LOCAL_TAGS=$(git tag -l | sort -V)
+
+          # Find new tags
+          NEW_TAGS=""
+          for tag in $UPSTREAM_TAGS; do
+            if ! echo "$LOCAL_TAGS" | grep -q "^${tag}$"; then
+              NEW_TAGS="${NEW_TAGS}${tag} "
+              git push origin refs/remotes/upstream/tags/${tag}:refs/tags/${tag}
+            fi
+          done
+
+          # Get latest tag
+          LATEST_TAG=$(git ls-remote --tags upstream | grep -v '{}' | cut -f2 | sed 's|refs/tags/||' | grep '^v[0-9]' | sort -V | tail -1)
+
+          if [ -n "$NEW_TAGS" ]; then
+            echo "new_tags=${NEW_TAGS}" >> $GITHUB_OUTPUT
+            echo "✅ Synced new tags: ${NEW_TAGS}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "new_tags=" >> $GITHUB_OUTPUT
+            echo "ℹ️ No new tags to sync" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+          echo "📌 Latest upstream tag: ${LATEST_TAG}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Determine if build needed
+        id: determine_build
+        run: |
+          if [ "${{ github.event.inputs.force_build }}" == "true" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "⚡ Force build requested" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.sync_main.outputs.changed }}" == "true" ] || [ -n "${{ steps.sync_tags.outputs.new_tags }}" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "🔨 Build needed due to upstream changes" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "⏭️ Skipping build - no changes detected" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  build-main:
+    needs: sync-and-check
+    if: needs.sync-and-check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Detect required Go version
+        run: |
+          toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+          echo "GOVERSION=${toolchain}" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOVERSION }}
+
+      - name: Setup direnv
+        uses: HatsuneMiku3939/direnv-action@v1
+        with:
+          masks: ''
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate build metadata
+        run: |
+          echo "BUILD_DATE=$(date -u +'%Y%m%d')" >> $GITHUB_ENV
+          echo "BUILD_TIMESTAMP=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
+          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      - name: Build Docker images
+        run: make docker-image
+        env:
+          RELEASE_DOCKER_IMAGE: build-temp/akash-provider
+
+      - name: Tag and push nightly images
+        run: |
+          # Tag for nightly with date
+          NIGHTLY_DATE_TAG="nightly-${{ env.BUILD_DATE }}"
+
+          # Tag for Docker Hub
+          docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:nightly-amd64
+          docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:nightly-arm64
+          docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-amd64
+          docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
+          docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:main-amd64
+          docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:main-arm64
+
+          # Tag for GHCR
+          docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:nightly-amd64
+          docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:nightly-arm64
+          docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-amd64
+          docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
+          docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:main-amd64
+          docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:main-arm64
+
+          # Push to Docker Hub
+          docker push ${DOCKERHUB_IMAGE}:nightly-amd64
+          docker push ${DOCKERHUB_IMAGE}:nightly-arm64
+          docker push ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-amd64
+          docker push ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
+          docker push ${DOCKERHUB_IMAGE}:main-amd64
+          docker push ${DOCKERHUB_IMAGE}:main-arm64
+
+          # Push to GHCR
+          docker push ${GHCR_IMAGE}:nightly-amd64
+          docker push ${GHCR_IMAGE}:nightly-arm64
+          docker push ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-amd64
+          docker push ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
+          docker push ${GHCR_IMAGE}:main-amd64
+          docker push ${GHCR_IMAGE}:main-arm64
+
+          # Create multi-arch manifests for Docker Hub
+          docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:nightly \
+            ${DOCKERHUB_IMAGE}:nightly-amd64 \
+            ${DOCKERHUB_IMAGE}:nightly-arm64
+
+          docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG} \
+            ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-amd64 \
+            ${DOCKERHUB_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
+
+          docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:main \
+            ${DOCKERHUB_IMAGE}:main-amd64 \
+            ${DOCKERHUB_IMAGE}:main-arm64
+
+          # Create multi-arch manifests for GHCR
+          docker buildx imagetools create -t ${GHCR_IMAGE}:nightly \
+            ${GHCR_IMAGE}:nightly-amd64 \
+            ${GHCR_IMAGE}:nightly-arm64
+
+          docker buildx imagetools create -t ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG} \
+            ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-amd64 \
+            ${GHCR_IMAGE}:${NIGHTLY_DATE_TAG}-arm64
+
+          docker buildx imagetools create -t ${GHCR_IMAGE}:main \
+            ${GHCR_IMAGE}:main-amd64 \
+            ${GHCR_IMAGE}:main-arm64
+
+          echo "✅ Pushed nightly builds with tags: nightly, ${NIGHTLY_DATE_TAG}, main" >> $GITHUB_STEP_SUMMARY
+
+  build-release:
+    needs: sync-and-check
+    if: needs.sync-and-check.outputs.latest_tag != '' && needs.sync-and-check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.sync-and-check.outputs.latest_tag }}
+
+      - name: Detect required Go version
+        run: |
+          toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+          echo "GOVERSION=${toolchain}" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOVERSION }}
+
+      - name: Setup direnv
+        uses: HatsuneMiku3939/direnv-action@v1
+        with:
+          masks: ''
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Docker images
+        run: make docker-image
+        env:
+          RELEASE_DOCKER_IMAGE: build-temp/akash-provider
+
+      - name: Tag and push release images
+        run: |
+          VERSION="${{ needs.sync-and-check.outputs.latest_tag }}"
+
+          # Tag for Docker Hub
+          docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:${VERSION}-amd64
+          docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:${VERSION}-arm64
+          docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:latest-amd64
+          docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:latest-arm64
+
+          # Tag for GHCR
+          docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:${VERSION}-amd64
+          docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:${VERSION}-arm64
+          docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:latest-amd64
+          docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:latest-arm64
+
+          # Push to Docker Hub
+          docker push ${DOCKERHUB_IMAGE}:${VERSION}-amd64
+          docker push ${DOCKERHUB_IMAGE}:${VERSION}-arm64
+          docker push ${DOCKERHUB_IMAGE}:latest-amd64
+          docker push ${DOCKERHUB_IMAGE}:latest-arm64
+
+          # Push to GHCR
+          docker push ${GHCR_IMAGE}:${VERSION}-amd64
+          docker push ${GHCR_IMAGE}:${VERSION}-arm64
+          docker push ${GHCR_IMAGE}:latest-amd64
+          docker push ${GHCR_IMAGE}:latest-arm64
+
+          # Create multi-arch manifests for Docker Hub
+          docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:${VERSION} \
+            ${DOCKERHUB_IMAGE}:${VERSION}-amd64 \
+            ${DOCKERHUB_IMAGE}:${VERSION}-arm64
+
+          docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:latest \
+            ${DOCKERHUB_IMAGE}:latest-amd64 \
+            ${DOCKERHUB_IMAGE}:latest-arm64
+
+          # Create multi-arch manifests for GHCR
+          docker buildx imagetools create -t ${GHCR_IMAGE}:${VERSION} \
+            ${GHCR_IMAGE}:${VERSION}-amd64 \
+            ${GHCR_IMAGE}:${VERSION}-arm64
+
+          docker buildx imagetools create -t ${GHCR_IMAGE}:latest \
+            ${GHCR_IMAGE}:latest-amd64 \
+            ${GHCR_IMAGE}:latest-arm64
+
+          echo "✅ Pushed release ${VERSION} with latest tag" >> $GITHUB_STEP_SUMMARY
+
+  summary:
+    needs: [sync-and-check, build-main, build-release]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# 🌙 Nightly Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "**Upstream**: ${{ env.UPSTREAM_REPO }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Sync Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Main branch changed: ${{ needs.sync-and-check.outputs.main_changed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- New tags synced: ${{ needs.sync-and-check.outputs.new_tags || 'None' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Latest tag: ${{ needs.sync-and-check.outputs.latest_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Build Status" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.sync-and-check.outputs.should_build }}" == "true" ]; then
+            echo "- Main build: ${{ needs.build-main.result }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Release build: ${{ needs.build-release.result }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## Published Images" >> $GITHUB_STEP_SUMMARY
+            echo "### Docker Hub" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${{ env.DOCKERHUB_IMAGE }}:nightly\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${{ env.DOCKERHUB_IMAGE }}:nightly-$(date -u +'%Y%m%d')\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${{ env.DOCKERHUB_IMAGE }}:main\`" >> $GITHUB_STEP_SUMMARY
+            if [ -n "${{ needs.sync-and-check.outputs.latest_tag }}" ]; then
+              echo "- \`${{ env.DOCKERHUB_IMAGE }}:latest\`" >> $GITHUB_STEP_SUMMARY
+              echo "- \`${{ env.DOCKERHUB_IMAGE }}:${{ needs.sync-and-check.outputs.latest_tag }}\`" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### GitHub Container Registry" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${{ env.GHCR_IMAGE }}:nightly\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${{ env.GHCR_IMAGE }}:nightly-$(date -u +'%Y%m%d')\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${{ env.GHCR_IMAGE }}:main\`" >> $GITHUB_STEP_SUMMARY
+            if [ -n "${{ needs.sync-and-check.outputs.latest_tag }}" ]; then
+              echo "- \`${{ env.GHCR_IMAGE }}:latest\`" >> $GITHUB_STEP_SUMMARY
+              echo "- \`${{ env.GHCR_IMAGE }}:${{ needs.sync-and-check.outputs.latest_tag }}\`" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⏭️ No builds performed - repository already up to date" >> $GITHUB_STEP_SUMMARY
+          fi

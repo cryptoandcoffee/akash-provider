@@ -1,0 +1,169 @@
+name: Docker Build and Push
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  repository_dispatch:
+    types: [upstream-sync, release-build]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build (branch or tag)'
+        required: false
+        default: 'main'
+      tag_as_latest:
+        description: 'Tag this build as latest'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  DOCKER_CLI_EXPERIMENTAL: "enabled"
+  DOCKERHUB_IMAGE: cryptoandcoffee/akash-network-provider
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/akash-network-provider
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Checkout code with full history
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.ref || github.event.client_payload.ref || github.ref }}
+
+      # 2. Detect required Go version
+      - name: Detect required Go version
+        run: |
+          toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+          echo "GOVERSION=${toolchain}" >> $GITHUB_ENV
+
+      # 3. Set up Go
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOVERSION }}
+
+      # 4. Setup direnv for environment management
+      - name: Setup direnv
+        uses: HatsuneMiku3939/direnv-action@v1
+        with:
+          masks: ''
+
+      # 5. Set up QEMU for multi-arch builds
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 6. Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 7. Login to Docker Hub
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 8. Login to GitHub Container Registry
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 9. Build Docker images locally
+      - name: Build Docker images
+        run: make docker-image
+        env:
+          RELEASE_DOCKER_IMAGE: build-temp/akash-provider
+
+      # 10. Tag and push images
+      - name: Tag and push images
+        run: |
+          # Determine tags based on ref
+          REF="${{ github.event.inputs.ref || github.event.client_payload.ref || github.ref }}"
+
+          if [[ "$REF" == refs/tags/* ]] || [[ "$REF" == v* ]]; then
+            # Handle tag builds
+            if [[ "$REF" == refs/tags/* ]]; then
+              VERSION=${REF#refs/tags/}
+            else
+              VERSION=$REF
+            fi
+
+            # Tag for Docker Hub
+            docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:${VERSION}-amd64
+            docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:${VERSION}-arm64
+            docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:latest-amd64
+            docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:latest-arm64
+
+            # Tag for GHCR
+            docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:${VERSION}-amd64
+            docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:${VERSION}-arm64
+            docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:latest-amd64
+            docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:latest-arm64
+
+            # Push to Docker Hub
+            docker push ${DOCKERHUB_IMAGE}:${VERSION}-amd64
+            docker push ${DOCKERHUB_IMAGE}:${VERSION}-arm64
+            docker push ${DOCKERHUB_IMAGE}:latest-amd64
+            docker push ${DOCKERHUB_IMAGE}:latest-arm64
+
+            # Push to GHCR
+            docker push ${GHCR_IMAGE}:${VERSION}-amd64
+            docker push ${GHCR_IMAGE}:${VERSION}-arm64
+            docker push ${GHCR_IMAGE}:latest-amd64
+            docker push ${GHCR_IMAGE}:latest-arm64
+
+            # Create multi-arch manifests for Docker Hub
+            docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:${VERSION} \
+              ${DOCKERHUB_IMAGE}:${VERSION}-amd64 \
+              ${DOCKERHUB_IMAGE}:${VERSION}-arm64
+
+            docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:latest \
+              ${DOCKERHUB_IMAGE}:latest-amd64 \
+              ${DOCKERHUB_IMAGE}:latest-arm64
+
+            # Create multi-arch manifests for GHCR
+            docker buildx imagetools create -t ${GHCR_IMAGE}:${VERSION} \
+              ${GHCR_IMAGE}:${VERSION}-amd64 \
+              ${GHCR_IMAGE}:${VERSION}-arm64
+
+            docker buildx imagetools create -t ${GHCR_IMAGE}:latest \
+              ${GHCR_IMAGE}:latest-amd64 \
+              ${GHCR_IMAGE}:latest-arm64
+
+          else
+            # Main branch
+
+            # Tag for Docker Hub
+            docker tag build-temp/akash-provider:latest-amd64 ${DOCKERHUB_IMAGE}:main-amd64
+            docker tag build-temp/akash-provider:latest-arm64 ${DOCKERHUB_IMAGE}:main-arm64
+
+            # Tag for GHCR
+            docker tag build-temp/akash-provider:latest-amd64 ${GHCR_IMAGE}:main-amd64
+            docker tag build-temp/akash-provider:latest-arm64 ${GHCR_IMAGE}:main-arm64
+
+            # Push to Docker Hub
+            docker push ${DOCKERHUB_IMAGE}:main-amd64
+            docker push ${DOCKERHUB_IMAGE}:main-arm64
+
+            # Push to GHCR
+            docker push ${GHCR_IMAGE}:main-amd64
+            docker push ${GHCR_IMAGE}:main-arm64
+
+            # Create multi-arch manifests
+            docker buildx imagetools create -t ${DOCKERHUB_IMAGE}:main \
+              ${DOCKERHUB_IMAGE}:main-amd64 \
+              ${DOCKERHUB_IMAGE}:main-arm64
+
+            docker buildx imagetools create -t ${GHCR_IMAGE}:main \
+              ${GHCR_IMAGE}:main-amd64 \
+              ${GHCR_IMAGE}:main-arm64
+          fi
