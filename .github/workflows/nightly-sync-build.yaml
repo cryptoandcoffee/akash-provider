@@ -20,7 +20,7 @@ env:
 
 jobs:
   sync-and-check:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       main_changed: ${{ steps.sync_main.outputs.changed }}
       new_tags: ${{ steps.sync_tags.outputs.new_tags }}
@@ -116,7 +116,7 @@ jobs:
   build-main:
     needs: sync-and-check
     if: needs.sync-and-check.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -237,7 +237,7 @@ jobs:
   build-release:
     needs: sync-and-check
     if: needs.sync-and-check.outputs.latest_tag != '' && needs.sync-and-check.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -335,7 +335,7 @@ jobs:
   summary:
     needs: [sync-and-check, build-main, build-release]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Generate summary
         run: |
