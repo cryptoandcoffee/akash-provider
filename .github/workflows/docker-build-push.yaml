@@ -48,18 +48,13 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      # 4. Install crane and buildah
-      - name: Install crane and buildah
+      # 4. Install crane
+      - name: Install crane
         run: |
           # Install crane for registry operations
           curl -L https://github.com/google/go-containerregistry/releases/download/v0.16.1/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /tmp
           sudo mv /tmp/crane /usr/local/bin/
-
-          # Install buildah for creating the image locally
-          if ! command -v buildah &> /dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y buildah
-          fi
+          crane version
 
       # 5. Generate build metadata
       - name: Generate build metadata
@@ -93,26 +88,29 @@ jobs:
 
           chmod +x ./bin/provider-services
 
-      # 7. Create Dockerfile
-      - name: Create Dockerfile
-        run: |
-          cat > Dockerfile.binary << 'EOF'
-          FROM alpine:3.18
-          RUN apk add --no-cache ca-certificates
-          COPY ./bin/provider-services /usr/local/bin/provider-services
-          RUN chmod +x /usr/local/bin/provider-services
-          ENTRYPOINT ["provider-services"]
-          CMD ["run"]
-          EOF
-
-      # 8. Build and push container
+      # 7. Build and push container
       - name: Build and push container
         run: |
-          # Create a tar archive of the container using buildah unshare to work around permission issues
-          sudo buildah unshare -- buildah bud --isolation chroot -f Dockerfile.binary -t provider-temp .
+          # Create container filesystem manually
+          mkdir -p rootfs/usr/local/bin
+          cp ./bin/provider-services rootfs/usr/local/bin/
+          chmod +x rootfs/usr/local/bin/provider-services
 
-          # Save to OCI format
-          sudo buildah unshare -- buildah push provider-temp oci-archive:/tmp/provider.tar:provider-temp
+          # Create OCI image with crane
+          cat > config.json << EOF
+          {
+            "architecture": "amd64",
+            "os": "linux",
+            "config": {
+              "Entrypoint": ["/usr/local/bin/provider-services"],
+              "Cmd": ["run"],
+              "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
+            }
+          }
+          EOF
+
+          # Create tar archive of filesystem
+          tar -C rootfs -czf layer.tar.gz .
 
           # Auth for crane
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
@@ -120,12 +118,13 @@ jobs:
 
           if [ "${{ env.IS_TAG }}" == "true" ]; then
             # Push for releases
-            crane push /tmp/provider.tar ${DOCKERHUB_IMAGE}:${VERSION}
+            crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:${VERSION} --base alpine:3.18
             crane tag ${DOCKERHUB_IMAGE}:${VERSION} ${DOCKERHUB_IMAGE}:latest
-            crane push /tmp/provider.tar ${GHCR_IMAGE}:${VERSION}
+
+            crane copy ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:${VERSION}
             crane tag ${GHCR_IMAGE}:${VERSION} ${GHCR_IMAGE}:latest
           else
             # Push for main branch
-            crane push /tmp/provider.tar ${DOCKERHUB_IMAGE}:main
-            crane push /tmp/provider.tar ${GHCR_IMAGE}:main
+            crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:main --base alpine:3.18
+            crane copy ${DOCKERHUB_IMAGE}:main ${GHCR_IMAGE}:main
           fi
