@@ -70,8 +70,8 @@ jobs:
         run: |
           set -x
 
-          # Download kaniko executor
-          wget -q https://github.com/GoogleContainerTools/kaniko/releases/download/v1.23.2/executor-linux-amd64 -O /tmp/kaniko
+          # Download kaniko executor (latest version)
+          curl -sSL https://github.com/GoogleContainerTools/kaniko/releases/download/v1.24.0/executor-linux-amd64 -o /tmp/kaniko
           chmod +x /tmp/kaniko
 
           # Try to build with kaniko
@@ -219,15 +219,19 @@ jobs:
           set -x
 
           # Download buildkit
-          wget -q https://github.com/moby/buildkit/releases/download/v0.16.0/buildkit-v0.16.0.linux-amd64.tar.gz
-          tar xzf buildkit-*.tar.gz
-          sudo mv bin/* /usr/local/bin/
+          curl -sSL https://github.com/moby/buildkit/releases/download/v0.18.2/buildkit-v0.18.2.linux-amd64.tar.gz -o buildkit.tar.gz
+          tar xzf buildkit.tar.gz
+
+          # Move binaries and scripts to /usr/local/bin
+          sudo cp -a bin/* /usr/local/bin/
+          sudo chmod +x /usr/local/bin/*
 
           # Verify installation
           buildctl --version
+          ls -la /usr/local/bin/buildctl-daemonless.sh
 
-          # Try daemonless build
-          buildctl-daemonless.sh build \
+          # Try daemonless build using full path
+          /usr/local/bin/buildctl-daemonless.sh build \
             --frontend dockerfile.v0 \
             --local context=. \
             --local dockerfile=. \
