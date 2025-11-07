@@ -152,33 +152,48 @@ jobs:
       - name: Build and push container
         working-directory: ./upstream
         run: |
-          # Create container filesystem manually
-          mkdir -p rootfs/usr/local/bin
-          cp ./bin/provider-services rootfs/usr/local/bin/
-          chmod +x rootfs/usr/local/bin/provider-services
+          # Create a complete rootfs with Alpine + required tools
+          mkdir -p rootfs
 
-          # Create OCI image with crane
-          cat > config.json << EOF
-          {
-            "architecture": "amd64",
-            "os": "linux",
-            "config": {
-              "Entrypoint": ["/usr/local/bin/provider-services"],
-              "Cmd": ["run"],
-              "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
-            }
-          }
-          EOF
+          # Pull and extract alpine base
+          crane export alpine:3.18 - | tar -xC rootfs
 
-          # Create tar archive of filesystem
-          tar -C rootfs -czf layer.tar.gz .
+          # Install required packages in the rootfs using chroot
+          # Mount proc for apk to work properly
+          sudo mount --bind /proc rootfs/proc || true
+
+          # Install bash, curl, jq, and ca-certificates
+          sudo chroot rootfs /bin/sh -c "apk add --no-cache bash curl jq ca-certificates"
+
+          # Cleanup
+          sudo umount rootfs/proc || true
+          sudo rm -rf rootfs/var/cache/apk/*
+
+          # Add our binary
+          sudo cp ./bin/provider-services rootfs/usr/local/bin/
+          sudo chmod +x rootfs/usr/local/bin/provider-services
+
+          # Create symlink for bash if needed
+          if [ ! -e rootfs/bin/bash ]; then
+            sudo ln -s /usr/bin/bash rootfs/bin/bash || true
+          fi
+
+          # Create tar archive of complete filesystem
+          sudo tar -C rootfs -czf layer.tar.gz .
+          sudo chown $(id -u):$(id -g) layer.tar.gz
 
           # Auth for crane
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
           echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-          # Append layer and push to registries
-          crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:nightly --base alpine:3.18
+          # Create base image from scratch with our complete rootfs
+          # Use scratch as base and append our complete layer
+          crane mutate scratch \
+            --append layer.tar.gz \
+            --entrypoint /usr/local/bin/provider-services \
+            --cmd run \
+            --tag ${DOCKERHUB_IMAGE}:nightly
+
           crane tag ${DOCKERHUB_IMAGE}:nightly nightly-${BUILD_DATE}
           crane tag ${DOCKERHUB_IMAGE}:nightly main
 
@@ -237,33 +252,47 @@ jobs:
       - name: Build and push container
         working-directory: ./upstream
         run: |
-          # Create container filesystem manually
-          mkdir -p rootfs/usr/local/bin
-          cp ./bin/provider-services rootfs/usr/local/bin/
-          chmod +x rootfs/usr/local/bin/provider-services
+          # Create a complete rootfs with Alpine + required tools
+          mkdir -p rootfs
 
-          # Create OCI image with crane
-          cat > config.json << EOF
-          {
-            "architecture": "amd64",
-            "os": "linux",
-            "config": {
-              "Entrypoint": ["/usr/local/bin/provider-services"],
-              "Cmd": ["run"],
-              "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
-            }
-          }
-          EOF
+          # Pull and extract alpine base
+          crane export alpine:3.18 - | tar -xC rootfs
 
-          # Create tar archive of filesystem
-          tar -C rootfs -czf layer.tar.gz .
+          # Install required packages in the rootfs using chroot
+          # Mount proc for apk to work properly
+          sudo mount --bind /proc rootfs/proc || true
+
+          # Install bash, curl, jq, and ca-certificates
+          sudo chroot rootfs /bin/sh -c "apk add --no-cache bash curl jq ca-certificates"
+
+          # Cleanup
+          sudo umount rootfs/proc || true
+          sudo rm -rf rootfs/var/cache/apk/*
+
+          # Add our binary
+          sudo cp ./bin/provider-services rootfs/usr/local/bin/
+          sudo chmod +x rootfs/usr/local/bin/provider-services
+
+          # Create symlink for bash if needed
+          if [ ! -e rootfs/bin/bash ]; then
+            sudo ln -s /usr/bin/bash rootfs/bin/bash || true
+          fi
+
+          # Create tar archive of complete filesystem
+          sudo tar -C rootfs -czf layer.tar.gz .
+          sudo chown $(id -u):$(id -g) layer.tar.gz
 
           # Auth for crane
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
           echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-          # Append layer and push to registries
-          crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:${VERSION} --base alpine:3.18
+          # Create base image from scratch with our complete rootfs
+          crane mutate scratch \
+            --append layer.tar.gz \
+            --entrypoint /usr/local/bin/provider-services \
+            --cmd run \
+            --tag ${DOCKERHUB_IMAGE}:${VERSION}
+
           crane tag ${DOCKERHUB_IMAGE}:${VERSION} latest
 
           crane copy ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:${VERSION}
