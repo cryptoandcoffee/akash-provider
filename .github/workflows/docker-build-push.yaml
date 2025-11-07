@@ -122,6 +122,7 @@ jobs:
             echo "🚀 Pushing release: ${VERSION}" >> $GITHUB_STEP_SUMMARY
 
             buildah bud \
+              --storage-driver vfs \
               --isolation chroot \
               --build-arg BINARY=bin/provider-services \
               --tag ${DOCKERHUB_IMAGE}:${VERSION} \
@@ -145,6 +146,7 @@ jobs:
             echo "🚀 Pushing main branch build" >> $GITHUB_STEP_SUMMARY
 
             buildah bud \
+              --storage-driver vfs \
               --isolation chroot \
               --build-arg BINARY=bin/provider-services \
               --tag ${DOCKERHUB_IMAGE}:main \

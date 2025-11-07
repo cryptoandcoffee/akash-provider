@@ -164,6 +164,7 @@ jobs:
 
           # Build with buildah (no Docker daemon needed)
           buildah bud \
+            --storage-driver vfs \
             --isolation chroot \
             --build-arg BINARY=bin/provider-services \
             --tag ${DOCKERHUB_IMAGE}:nightly \
@@ -246,6 +247,7 @@ jobs:
 
           # Build with buildah (no Docker daemon needed)
           buildah bud \
+            --storage-driver vfs \
             --isolation chroot \
             --build-arg BINARY=bin/provider-services \
             --tag ${DOCKERHUB_IMAGE}:${VERSION} \
