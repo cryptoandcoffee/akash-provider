@@ -153,12 +153,19 @@ jobs:
         working-directory: ./upstream
         run: |
           # Create container filesystem manually
-          mkdir -p rootfs/usr/local/bin
+          mkdir -p rootfs/usr/local/bin rootfs/etc rootfs/usr/share
           cp ./bin/provider-services rootfs/usr/local/bin/
           chmod +x rootfs/usr/local/bin/provider-services
 
-          # Extract SSL certificates from ubuntu:noble using crane (no Docker needed)
-          crane export ubuntu:noble - | tar -xf - -C rootfs etc/ssl usr/share/ca-certificates
+          # Download and extract ca-certificates from Ubuntu package
+          ROOTFS_PATH="$(pwd)/rootfs"
+          mkdir -p /tmp/certs && cd /tmp/certs
+          apt-get download ca-certificates
+          ar x ca-certificates_*.deb
+          tar -xf data.tar.*
+          cp -r etc/ssl "$ROOTFS_PATH/etc/"
+          cp -r usr/share/ca-certificates "$ROOTFS_PATH/usr/share/"
+          cd - > /dev/null
 
           # Create OCI image config
           cat > config.json << EOF
@@ -241,12 +248,19 @@ jobs:
         working-directory: ./upstream
         run: |
           # Create container filesystem manually
-          mkdir -p rootfs/usr/local/bin
+          mkdir -p rootfs/usr/local/bin rootfs/etc rootfs/usr/share
           cp ./bin/provider-services rootfs/usr/local/bin/
           chmod +x rootfs/usr/local/bin/provider-services
 
-          # Extract SSL certificates from ubuntu:noble using crane (no Docker needed)
-          crane export ubuntu:noble - | tar -xf - -C rootfs etc/ssl usr/share/ca-certificates
+          # Download and extract ca-certificates from Ubuntu package
+          ROOTFS_PATH="$(pwd)/rootfs"
+          mkdir -p /tmp/certs && cd /tmp/certs
+          apt-get download ca-certificates
+          ar x ca-certificates_*.deb
+          tar -xf data.tar.*
+          cp -r etc/ssl "$ROOTFS_PATH/etc/"
+          cp -r usr/share/ca-certificates "$ROOTFS_PATH/usr/share/"
+          cd - > /dev/null
 
           # Create OCI image config
           cat > config.json << EOF
