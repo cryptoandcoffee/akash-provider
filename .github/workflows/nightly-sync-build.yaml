@@ -157,8 +157,8 @@ jobs:
           cp ./bin/provider-services rootfs/usr/local/bin/
           chmod +x rootfs/usr/local/bin/provider-services
 
-          # Copy SSL certificates from ubuntu:noble
-          docker run --rm -v $(pwd)/rootfs:/target ubuntu:noble sh -c 'apt-get update -qq && apt-get install -y ca-certificates && cp -r /etc/ssl /usr/share/ca-certificates /target/'
+          # Extract SSL certificates from ubuntu:noble using crane (no Docker needed)
+          crane export ubuntu:noble - | tar -xf - -C rootfs etc/ssl usr/share/ca-certificates
 
           # Create OCI image config
           cat > config.json << EOF
@@ -245,8 +245,8 @@ jobs:
           cp ./bin/provider-services rootfs/usr/local/bin/
           chmod +x rootfs/usr/local/bin/provider-services
 
-          # Copy SSL certificates from ubuntu:noble
-          docker run --rm -v $(pwd)/rootfs:/target ubuntu:noble sh -c 'apt-get update -qq && apt-get install -y ca-certificates && cp -r /etc/ssl /usr/share/ca-certificates /target/'
+          # Extract SSL certificates from ubuntu:noble using crane (no Docker needed)
+          crane export ubuntu:noble - | tar -xf - -C rootfs etc/ssl usr/share/ca-certificates
 
           # Create OCI image config
           cat > config.json << EOF
