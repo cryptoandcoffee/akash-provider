@@ -25,7 +25,7 @@ jobs:
     runs-on: self-hosted
     continue-on-error: true
     steps:
-      - name: Clone and build binary
+      - name: Clone upstream and detect Go version
         run: |
           rm -rf /tmp/test-kaniko
           mkdir -p /tmp/test-kaniko
@@ -35,8 +35,16 @@ jobs:
           cd upstream
 
           toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
-          export GOVERSION=${toolchain}
+          echo "GOVERSION=${toolchain}" >> $GITHUB_ENV
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOVERSION }}
+
+      - name: Build binary
+        working-directory: /tmp/test-kaniko/upstream
+        run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -tags "osusergo,netgo,static_build" \
             -ldflags="-s -w -extldflags=-static" \
@@ -94,7 +102,7 @@ jobs:
     runs-on: self-hosted
     continue-on-error: true
     steps:
-      - name: Clone and build binary
+      - name: Clone upstream and detect Go version
         run: |
           rm -rf /tmp/test-buildah
           mkdir -p /tmp/test-buildah
@@ -104,7 +112,16 @@ jobs:
           cd upstream
 
           toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+          echo "GOVERSION=${toolchain}" >> $GITHUB_ENV
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOVERSION }}
+
+      - name: Build binary
+        working-directory: /tmp/test-buildah/upstream
+        run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -tags "osusergo,netgo,static_build" \
             -ldflags="-s -w -extldflags=-static" \
@@ -157,7 +174,7 @@ jobs:
     runs-on: self-hosted
     continue-on-error: true
     steps:
-      - name: Clone and build binary
+      - name: Clone upstream and detect Go version
         run: |
           rm -rf /tmp/test-buildkit-daemonless
           mkdir -p /tmp/test-buildkit-daemonless
@@ -167,7 +184,16 @@ jobs:
           cd upstream
 
           toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+          echo "GOVERSION=${toolchain}" >> $GITHUB_ENV
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOVERSION }}
+
+      - name: Build binary
+        working-directory: /tmp/test-buildkit-daemonless/upstream
+        run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -tags "osusergo,netgo,static_build" \
             -ldflags="-s -w -extldflags=-static" \
@@ -226,7 +252,7 @@ jobs:
     runs-on: self-hosted
     continue-on-error: true
     steps:
-      - name: Clone and build binary
+      - name: Clone upstream and detect Go version
         run: |
           rm -rf /tmp/test-podman
           mkdir -p /tmp/test-podman
@@ -236,7 +262,16 @@ jobs:
           cd upstream
 
           toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+          echo "GOVERSION=${toolchain}" >> $GITHUB_ENV
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOVERSION }}
+
+      - name: Build binary
+        working-directory: /tmp/test-podman/upstream
+        run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -tags "osusergo,netgo,static_build" \
             -ldflags="-s -w -extldflags=-static" \
@@ -289,7 +324,7 @@ jobs:
     runs-on: self-hosted
     continue-on-error: true
     steps:
-      - name: Clone and build binary
+      - name: Clone upstream and detect Go version
         run: |
           rm -rf /tmp/test-docker
           mkdir -p /tmp/test-docker
@@ -299,7 +334,16 @@ jobs:
           cd upstream
 
           toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+          echo "GOVERSION=${toolchain}" >> $GITHUB_ENV
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOVERSION }}
+
+      - name: Build binary
+        working-directory: /tmp/test-docker/upstream
+        run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -tags "osusergo,netgo,static_build" \
             -ldflags="-s -w -extldflags=-static" \
