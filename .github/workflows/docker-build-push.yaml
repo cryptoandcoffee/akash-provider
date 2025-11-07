@@ -108,12 +108,13 @@ jobs:
         working-directory: ./upstream
         run: |
           # Create container filesystem manually
-          mkdir -p rootfs/usr/local/bin rootfs/etc rootfs/usr/share
+          mkdir -p rootfs/usr/local/bin rootfs/etc/ssl rootfs/usr/share
           cp ./bin/provider-services rootfs/usr/local/bin/
           chmod +x rootfs/usr/local/bin/provider-services
 
-          # Copy SSL certificates from runner (they're already installed)
-          cp -r /etc/ssl rootfs/etc/
+          # Copy SSL certificates from runner (excluding private keys)
+          cp -r /etc/ssl/certs rootfs/etc/ssl/
+          cp /etc/ssl/openssl.cnf rootfs/etc/ssl/ 2>/dev/null || true
           cp -r /usr/share/ca-certificates rootfs/usr/share/
 
           # Create OCI image config
