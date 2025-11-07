@@ -126,12 +126,6 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Install crane
-        run: |
-          curl -L https://github.com/google/go-containerregistry/releases/download/v0.16.1/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /tmp
-          sudo mv /tmp/crane /usr/local/bin/
-          crane version
-
       - name: Generate build metadata
         run: |
           echo "BUILD_DATE=$(date -u +'%Y%m%d')" >> $GITHUB_ENV
@@ -144,91 +138,39 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -tags "osusergo,netgo,static_build" \
             -ldflags="-s -w -extldflags=-static" \
-            -o ./bin/provider-services \
+            -o ./provider-services \
             ./cmd/provider-services
 
-          chmod +x ./bin/provider-services
+          chmod +x ./provider-services
 
-      - name: Build and push container
+      - name: Build and push Docker images
         working-directory: ./upstream
         run: |
-          # Create a temporary docker image with dependencies and extract it
-          cat > Dockerfile.deps << 'DEPS_EOF'
-          FROM ubuntu:noble
-          RUN apt-get update && apt-get install -y --no-install-recommends \
-              tini curl jq bc netcat-traditional mawk pci.ids && \
-              rm -rf /var/lib/apt/lists/*
-          DEPS_EOF
+          # Login to registries
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-          # Build the temp image with dependencies
-          docker build -f Dockerfile.deps -t temp-deps:latest .
+          # Build the image using upstream Dockerfile
+          docker build -t ${DOCKERHUB_IMAGE}:nightly .
 
-          # Export the image filesystem using crane
-          mkdir -p ubuntu-base
-          crane export temp-deps:latest - | tar -xf - -C ubuntu-base
+          # Tag for Docker Hub
+          docker tag ${DOCKERHUB_IMAGE}:nightly ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
+          docker tag ${DOCKERHUB_IMAGE}:nightly ${DOCKERHUB_IMAGE}:main
 
-          # Create container filesystem with all required directories
-          mkdir -p rootfs/usr/local/bin rootfs/usr/bin rootfs/usr/share/misc
-          mkdir -p rootfs/lib rootfs/usr/lib rootfs/lib/x86_64-linux-gnu rootfs/usr/lib/x86_64-linux-gnu
-          mkdir -p rootfs/etc/ssl rootfs/usr/share
+          # Tag for GHCR
+          docker tag ${DOCKERHUB_IMAGE}:nightly ${GHCR_IMAGE}:nightly
+          docker tag ${DOCKERHUB_IMAGE}:nightly ${GHCR_IMAGE}:nightly-${BUILD_DATE}
+          docker tag ${DOCKERHUB_IMAGE}:nightly ${GHCR_IMAGE}:main
 
-          # Copy provider-services binary
-          cp ./bin/provider-services rootfs/usr/local/bin/
-          chmod +x rootfs/usr/local/bin/provider-services
+          # Push all tags to Docker Hub
+          docker push ${DOCKERHUB_IMAGE}:nightly
+          docker push ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
+          docker push ${DOCKERHUB_IMAGE}:main
 
-          # Copy runtime dependencies from extracted image
-          cp ubuntu-base/usr/bin/tini rootfs/usr/bin/
-          cp ubuntu-base/usr/bin/curl rootfs/usr/bin/
-          cp ubuntu-base/usr/bin/jq rootfs/usr/bin/
-          cp ubuntu-base/usr/bin/bc rootfs/usr/bin/
-          cp ubuntu-base/usr/bin/nc.traditional rootfs/usr/bin/
-          ln -s nc.traditional rootfs/usr/bin/netcat-traditional
-          cp ubuntu-base/usr/bin/mawk rootfs/usr/bin/
-          cp ubuntu-base/usr/share/misc/pci.ids rootfs/usr/share/misc/ 2>/dev/null || true
-
-          # Copy all shared libraries needed by the binaries
-          for lib_dir in lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu; do
-            if [ -d "ubuntu-base/${lib_dir}" ]; then
-              cp -a ubuntu-base/${lib_dir}/* rootfs/${lib_dir}/ 2>/dev/null || true
-            fi
-          done
-
-          # Copy SSL certificates from runner (excluding private keys)
-          cp -r /etc/ssl/certs rootfs/etc/ssl/
-          cp /etc/ssl/openssl.cnf rootfs/etc/ssl/ 2>/dev/null || true
-          cp -r /usr/share/ca-certificates rootfs/usr/share/
-
-          # Clean up
-          docker rmi temp-deps:latest
-
-          # Create OCI image config with tini entrypoint
-          cat > config.json << EOF
-          {
-            "architecture": "amd64",
-            "os": "linux",
-            "config": {
-              "Entrypoint": ["/usr/bin/tini", "--", "/usr/local/bin/provider-services"],
-              "Cmd": ["run"],
-              "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
-            }
-          }
-          EOF
-
-          # Create tar archive of filesystem
-          tar -C rootfs -czf layer.tar.gz .
-
-          # Auth for crane
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-          # Push nightly and main builds
-          crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:nightly --base ubuntu:noble
-          crane tag ${DOCKERHUB_IMAGE}:nightly nightly-${BUILD_DATE}
-          crane tag ${DOCKERHUB_IMAGE}:nightly main
-
-          crane copy ${DOCKERHUB_IMAGE}:nightly ${GHCR_IMAGE}:nightly
-          crane copy ${DOCKERHUB_IMAGE}:nightly ${GHCR_IMAGE}:nightly-${BUILD_DATE}
-          crane copy ${DOCKERHUB_IMAGE}:nightly ${GHCR_IMAGE}:main
+          # Push all tags to GHCR
+          docker push ${GHCR_IMAGE}:nightly
+          docker push ${GHCR_IMAGE}:nightly-${BUILD_DATE}
+          docker push ${GHCR_IMAGE}:main
 
   build-and-push-release:
     needs: check-upstream
@@ -253,12 +195,6 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Install crane
-        run: |
-          curl -L https://github.com/google/go-containerregistry/releases/download/v0.16.1/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /tmp
-          sudo mv /tmp/crane /usr/local/bin/
-          crane version
-
       - name: Generate build metadata
         run: |
           VERSION="${{ needs.check-upstream.outputs.latest_tag }}"
@@ -273,89 +209,35 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -tags "osusergo,netgo,static_build" \
             -ldflags="-s -w -extldflags=-static" \
-            -o ./bin/provider-services \
+            -o ./provider-services \
             ./cmd/provider-services
 
-          chmod +x ./bin/provider-services
+          chmod +x ./provider-services
 
-      - name: Build and push container
+      - name: Build and push Docker images
         working-directory: ./upstream
         run: |
-          # Create a temporary docker image with dependencies and extract it
-          cat > Dockerfile.deps << 'DEPS_EOF'
-          FROM ubuntu:noble
-          RUN apt-get update && apt-get install -y --no-install-recommends \
-              tini curl jq bc netcat-traditional mawk pci.ids && \
-              rm -rf /var/lib/apt/lists/*
-          DEPS_EOF
+          # Login to registries
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-          # Build the temp image with dependencies
-          docker build -f Dockerfile.deps -t temp-deps:latest .
+          # Build the image using upstream Dockerfile
+          docker build -t ${DOCKERHUB_IMAGE}:${VERSION} .
 
-          # Export the image filesystem using crane
-          mkdir -p ubuntu-base
-          crane export temp-deps:latest - | tar -xf - -C ubuntu-base
+          # Tag for Docker Hub
+          docker tag ${DOCKERHUB_IMAGE}:${VERSION} ${DOCKERHUB_IMAGE}:latest
 
-          # Create container filesystem with all required directories
-          mkdir -p rootfs/usr/local/bin rootfs/usr/bin rootfs/usr/share/misc
-          mkdir -p rootfs/lib rootfs/usr/lib rootfs/lib/x86_64-linux-gnu rootfs/usr/lib/x86_64-linux-gnu
-          mkdir -p rootfs/etc/ssl rootfs/usr/share
+          # Tag for GHCR
+          docker tag ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:${VERSION}
+          docker tag ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:latest
 
-          # Copy provider-services binary
-          cp ./bin/provider-services rootfs/usr/local/bin/
-          chmod +x rootfs/usr/local/bin/provider-services
+          # Push all tags to Docker Hub
+          docker push ${DOCKERHUB_IMAGE}:${VERSION}
+          docker push ${DOCKERHUB_IMAGE}:latest
 
-          # Copy runtime dependencies from extracted image
-          cp ubuntu-base/usr/bin/tini rootfs/usr/bin/
-          cp ubuntu-base/usr/bin/curl rootfs/usr/bin/
-          cp ubuntu-base/usr/bin/jq rootfs/usr/bin/
-          cp ubuntu-base/usr/bin/bc rootfs/usr/bin/
-          cp ubuntu-base/usr/bin/nc.traditional rootfs/usr/bin/
-          ln -s nc.traditional rootfs/usr/bin/netcat-traditional
-          cp ubuntu-base/usr/bin/mawk rootfs/usr/bin/
-          cp ubuntu-base/usr/share/misc/pci.ids rootfs/usr/share/misc/ 2>/dev/null || true
-
-          # Copy all shared libraries needed by the binaries
-          for lib_dir in lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu; do
-            if [ -d "ubuntu-base/${lib_dir}" ]; then
-              cp -a ubuntu-base/${lib_dir}/* rootfs/${lib_dir}/ 2>/dev/null || true
-            fi
-          done
-
-          # Copy SSL certificates from runner (excluding private keys)
-          cp -r /etc/ssl/certs rootfs/etc/ssl/
-          cp /etc/ssl/openssl.cnf rootfs/etc/ssl/ 2>/dev/null || true
-          cp -r /usr/share/ca-certificates rootfs/usr/share/
-
-          # Clean up
-          docker rmi temp-deps:latest
-
-          # Create OCI image config with tini entrypoint
-          cat > config.json << EOF
-          {
-            "architecture": "amd64",
-            "os": "linux",
-            "config": {
-              "Entrypoint": ["/usr/bin/tini", "--", "/usr/local/bin/provider-services"],
-              "Cmd": ["run"],
-              "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
-            }
-          }
-          EOF
-
-          # Create tar archive of filesystem
-          tar -C rootfs -czf layer.tar.gz .
-
-          # Auth for crane
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-          # Push release builds
-          crane append -f layer.tar.gz -t ${DOCKERHUB_IMAGE}:${VERSION} --base ubuntu:noble
-          crane tag ${DOCKERHUB_IMAGE}:${VERSION} latest
-
-          crane copy ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:${VERSION}
-          crane copy ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:latest
+          # Push all tags to GHCR
+          docker push ${GHCR_IMAGE}:${VERSION}
+          docker push ${GHCR_IMAGE}:latest
 
   summary:
     needs: [check-upstream, build-and-push-main, build-and-push-release]
