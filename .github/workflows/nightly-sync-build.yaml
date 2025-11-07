@@ -163,9 +163,8 @@ jobs:
           cp ../dockerfile-repo/Dockerfile ./
 
           # Build with buildah (no Docker daemon needed)
-          buildah bud \
+          sudo buildah build \
             --storage-driver vfs \
-            --isolation chroot \
             --build-arg BINARY=bin/provider-services \
             --tag ${DOCKERHUB_IMAGE}:nightly \
             --tag ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE} \
@@ -176,13 +175,13 @@ jobs:
             .
 
           # Push to registries
-          buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:nightly
-          buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
-          buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:main
+          sudo buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:nightly
+          sudo buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
+          sudo buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:main
 
-          buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:nightly
-          buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:nightly-${BUILD_DATE}
-          buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:main
+          sudo buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:nightly
+          sudo buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:nightly-${BUILD_DATE}
+          sudo buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:main
 
   build-and-push-release:
     needs: check-upstream
@@ -246,9 +245,8 @@ jobs:
           cp ../dockerfile-repo/Dockerfile ./
 
           # Build with buildah (no Docker daemon needed)
-          buildah bud \
+          sudo buildah build \
             --storage-driver vfs \
-            --isolation chroot \
             --build-arg BINARY=bin/provider-services \
             --tag ${DOCKERHUB_IMAGE}:${VERSION} \
             --tag ${DOCKERHUB_IMAGE}:latest \
@@ -257,11 +255,11 @@ jobs:
             .
 
           # Push to registries
-          buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:${VERSION}
-          buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:latest
+          sudo buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:${VERSION}
+          sudo buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:latest
 
-          buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:${VERSION}
-          buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:latest
+          sudo buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:${VERSION}
+          sudo buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:latest
 
   summary:
     needs: [check-upstream, build-and-push-main, build-and-push-release]

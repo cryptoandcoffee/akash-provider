@@ -121,41 +121,39 @@ jobs:
             # Build for releases
             echo "🚀 Pushing release: ${VERSION}" >> $GITHUB_STEP_SUMMARY
 
-            buildah bud \
+            sudo buildah build \
               --storage-driver vfs \
-              --isolation chroot \
               --build-arg BINARY=bin/provider-services \
               --tag ${DOCKERHUB_IMAGE}:${VERSION} \
               --tag ${GHCR_IMAGE}:${VERSION} \
               .
 
             # Push version tags
-            buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:${VERSION}
-            buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:${VERSION}
+            sudo buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:${VERSION}
+            sudo buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:${VERSION}
 
             if [ "${{ github.event.inputs.tag_as_latest }}" == "true" ]; then
               # Tag and push as latest
-              buildah tag ${DOCKERHUB_IMAGE}:${VERSION} ${DOCKERHUB_IMAGE}:latest
-              buildah tag ${GHCR_IMAGE}:${VERSION} ${GHCR_IMAGE}:latest
-              buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:latest
-              buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:latest
+              sudo buildah tag ${DOCKERHUB_IMAGE}:${VERSION} ${DOCKERHUB_IMAGE}:latest
+              sudo buildah tag ${GHCR_IMAGE}:${VERSION} ${GHCR_IMAGE}:latest
+              sudo buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:latest
+              sudo buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:latest
               echo "✅ Tagged as latest" >> $GITHUB_STEP_SUMMARY
             fi
           else
             # Build for main branch
             echo "🚀 Pushing main branch build" >> $GITHUB_STEP_SUMMARY
 
-            buildah bud \
+            sudo buildah build \
               --storage-driver vfs \
-              --isolation chroot \
               --build-arg BINARY=bin/provider-services \
               --tag ${DOCKERHUB_IMAGE}:main \
               --tag ${GHCR_IMAGE}:main \
               .
 
             # Push main tags
-            buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:main
-            buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:main
+            sudo buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:main
+            sudo buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:main
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
