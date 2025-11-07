@@ -152,23 +152,47 @@ jobs:
       - name: Build and push container
         working-directory: ./upstream
         run: |
-          # Create container filesystem manually
-          mkdir -p rootfs/usr/local/bin rootfs/etc/ssl rootfs/usr/share
+          # Extract ubuntu:noble base image to get dependencies
+          mkdir -p ubuntu-base
+          crane export ubuntu:noble - | tar -xf - -C ubuntu-base
+
+          # Create container filesystem with all required directories
+          mkdir -p rootfs/usr/local/bin rootfs/usr/bin rootfs/usr/share/misc
+          mkdir -p rootfs/lib rootfs/usr/lib rootfs/lib/x86_64-linux-gnu rootfs/usr/lib/x86_64-linux-gnu
+          mkdir -p rootfs/etc/ssl rootfs/usr/share
+
+          # Copy provider-services binary
           cp ./bin/provider-services rootfs/usr/local/bin/
           chmod +x rootfs/usr/local/bin/provider-services
+
+          # Copy runtime dependencies from ubuntu base
+          cp ubuntu-base/usr/bin/tini rootfs/usr/bin/ 2>/dev/null || echo "tini not found in base"
+          cp ubuntu-base/usr/bin/curl rootfs/usr/bin/
+          cp ubuntu-base/usr/bin/jq rootfs/usr/bin/
+          cp ubuntu-base/usr/bin/bc rootfs/usr/bin/
+          cp ubuntu-base/usr/bin/nc.traditional rootfs/usr/bin/ && ln -s nc.traditional rootfs/usr/bin/netcat-traditional
+          cp ubuntu-base/usr/bin/mawk rootfs/usr/bin/
+          cp ubuntu-base/usr/share/misc/pci.ids rootfs/usr/share/misc/ 2>/dev/null || true
+
+          # Copy all shared libraries needed by the binaries
+          for lib_dir in lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu lib usr/lib; do
+            if [ -d "ubuntu-base/${lib_dir}" ]; then
+              cp -a ubuntu-base/${lib_dir}/* rootfs/${lib_dir}/ 2>/dev/null || true
+            fi
+          done
 
           # Copy SSL certificates from runner (excluding private keys)
           cp -r /etc/ssl/certs rootfs/etc/ssl/
           cp /etc/ssl/openssl.cnf rootfs/etc/ssl/ 2>/dev/null || true
           cp -r /usr/share/ca-certificates rootfs/usr/share/
 
-          # Create OCI image config
+          # Create OCI image config with tini entrypoint
           cat > config.json << EOF
           {
             "architecture": "amd64",
             "os": "linux",
             "config": {
-              "Entrypoint": ["/usr/local/bin/provider-services"],
+              "Entrypoint": ["/usr/bin/tini", "--", "/usr/local/bin/provider-services"],
               "Cmd": ["run"],
               "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
             }
@@ -242,23 +266,47 @@ jobs:
       - name: Build and push container
         working-directory: ./upstream
         run: |
-          # Create container filesystem manually
-          mkdir -p rootfs/usr/local/bin rootfs/etc/ssl rootfs/usr/share
+          # Extract ubuntu:noble base image to get dependencies
+          mkdir -p ubuntu-base
+          crane export ubuntu:noble - | tar -xf - -C ubuntu-base
+
+          # Create container filesystem with all required directories
+          mkdir -p rootfs/usr/local/bin rootfs/usr/bin rootfs/usr/share/misc
+          mkdir -p rootfs/lib rootfs/usr/lib rootfs/lib/x86_64-linux-gnu rootfs/usr/lib/x86_64-linux-gnu
+          mkdir -p rootfs/etc/ssl rootfs/usr/share
+
+          # Copy provider-services binary
           cp ./bin/provider-services rootfs/usr/local/bin/
           chmod +x rootfs/usr/local/bin/provider-services
+
+          # Copy runtime dependencies from ubuntu base
+          cp ubuntu-base/usr/bin/tini rootfs/usr/bin/ 2>/dev/null || echo "tini not found in base"
+          cp ubuntu-base/usr/bin/curl rootfs/usr/bin/
+          cp ubuntu-base/usr/bin/jq rootfs/usr/bin/
+          cp ubuntu-base/usr/bin/bc rootfs/usr/bin/
+          cp ubuntu-base/usr/bin/nc.traditional rootfs/usr/bin/ && ln -s nc.traditional rootfs/usr/bin/netcat-traditional
+          cp ubuntu-base/usr/bin/mawk rootfs/usr/bin/
+          cp ubuntu-base/usr/share/misc/pci.ids rootfs/usr/share/misc/ 2>/dev/null || true
+
+          # Copy all shared libraries needed by the binaries
+          for lib_dir in lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu lib usr/lib; do
+            if [ -d "ubuntu-base/${lib_dir}" ]; then
+              cp -a ubuntu-base/${lib_dir}/* rootfs/${lib_dir}/ 2>/dev/null || true
+            fi
+          done
 
           # Copy SSL certificates from runner (excluding private keys)
           cp -r /etc/ssl/certs rootfs/etc/ssl/
           cp /etc/ssl/openssl.cnf rootfs/etc/ssl/ 2>/dev/null || true
           cp -r /usr/share/ca-certificates rootfs/usr/share/
 
-          # Create OCI image config
+          # Create OCI image config with tini entrypoint
           cat > config.json << EOF
           {
             "architecture": "amd64",
             "os": "linux",
             "config": {
-              "Entrypoint": ["/usr/local/bin/provider-services"],
+              "Entrypoint": ["/usr/bin/tini", "--", "/usr/local/bin/provider-services"],
               "Cmd": ["run"],
               "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
             }
