@@ -152,9 +152,20 @@ jobs:
       - name: Build and push container
         working-directory: ./upstream
         run: |
-          # Extract ubuntu:noble base image to get dependencies
+          # Create a temporary docker image with dependencies and extract it
+          cat > Dockerfile.deps << 'DEPS_EOF'
+          FROM ubuntu:noble
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+              tini curl jq bc netcat-traditional mawk pci.ids && \
+              rm -rf /var/lib/apt/lists/*
+          DEPS_EOF
+
+          # Build the temp image with dependencies
+          docker build -f Dockerfile.deps -t temp-deps:latest .
+
+          # Export the image filesystem using crane
           mkdir -p ubuntu-base
-          crane export ubuntu:noble - | tar -xf - -C ubuntu-base
+          crane export temp-deps:latest - | tar -xf - -C ubuntu-base
 
           # Create container filesystem with all required directories
           mkdir -p rootfs/usr/local/bin rootfs/usr/bin rootfs/usr/share/misc
@@ -165,17 +176,18 @@ jobs:
           cp ./bin/provider-services rootfs/usr/local/bin/
           chmod +x rootfs/usr/local/bin/provider-services
 
-          # Copy runtime dependencies from ubuntu base
-          cp ubuntu-base/usr/bin/tini rootfs/usr/bin/ 2>/dev/null || echo "tini not found in base"
+          # Copy runtime dependencies from extracted image
+          cp ubuntu-base/usr/bin/tini rootfs/usr/bin/
           cp ubuntu-base/usr/bin/curl rootfs/usr/bin/
           cp ubuntu-base/usr/bin/jq rootfs/usr/bin/
           cp ubuntu-base/usr/bin/bc rootfs/usr/bin/
-          cp ubuntu-base/usr/bin/nc.traditional rootfs/usr/bin/ && ln -s nc.traditional rootfs/usr/bin/netcat-traditional
+          cp ubuntu-base/usr/bin/nc.traditional rootfs/usr/bin/
+          ln -s nc.traditional rootfs/usr/bin/netcat-traditional
           cp ubuntu-base/usr/bin/mawk rootfs/usr/bin/
           cp ubuntu-base/usr/share/misc/pci.ids rootfs/usr/share/misc/ 2>/dev/null || true
 
           # Copy all shared libraries needed by the binaries
-          for lib_dir in lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu lib usr/lib; do
+          for lib_dir in lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu; do
             if [ -d "ubuntu-base/${lib_dir}" ]; then
               cp -a ubuntu-base/${lib_dir}/* rootfs/${lib_dir}/ 2>/dev/null || true
             fi
@@ -185,6 +197,9 @@ jobs:
           cp -r /etc/ssl/certs rootfs/etc/ssl/
           cp /etc/ssl/openssl.cnf rootfs/etc/ssl/ 2>/dev/null || true
           cp -r /usr/share/ca-certificates rootfs/usr/share/
+
+          # Clean up
+          docker rmi temp-deps:latest
 
           # Create OCI image config with tini entrypoint
           cat > config.json << EOF
@@ -266,9 +281,20 @@ jobs:
       - name: Build and push container
         working-directory: ./upstream
         run: |
-          # Extract ubuntu:noble base image to get dependencies
+          # Create a temporary docker image with dependencies and extract it
+          cat > Dockerfile.deps << 'DEPS_EOF'
+          FROM ubuntu:noble
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+              tini curl jq bc netcat-traditional mawk pci.ids && \
+              rm -rf /var/lib/apt/lists/*
+          DEPS_EOF
+
+          # Build the temp image with dependencies
+          docker build -f Dockerfile.deps -t temp-deps:latest .
+
+          # Export the image filesystem using crane
           mkdir -p ubuntu-base
-          crane export ubuntu:noble - | tar -xf - -C ubuntu-base
+          crane export temp-deps:latest - | tar -xf - -C ubuntu-base
 
           # Create container filesystem with all required directories
           mkdir -p rootfs/usr/local/bin rootfs/usr/bin rootfs/usr/share/misc
@@ -279,17 +305,18 @@ jobs:
           cp ./bin/provider-services rootfs/usr/local/bin/
           chmod +x rootfs/usr/local/bin/provider-services
 
-          # Copy runtime dependencies from ubuntu base
-          cp ubuntu-base/usr/bin/tini rootfs/usr/bin/ 2>/dev/null || echo "tini not found in base"
+          # Copy runtime dependencies from extracted image
+          cp ubuntu-base/usr/bin/tini rootfs/usr/bin/
           cp ubuntu-base/usr/bin/curl rootfs/usr/bin/
           cp ubuntu-base/usr/bin/jq rootfs/usr/bin/
           cp ubuntu-base/usr/bin/bc rootfs/usr/bin/
-          cp ubuntu-base/usr/bin/nc.traditional rootfs/usr/bin/ && ln -s nc.traditional rootfs/usr/bin/netcat-traditional
+          cp ubuntu-base/usr/bin/nc.traditional rootfs/usr/bin/
+          ln -s nc.traditional rootfs/usr/bin/netcat-traditional
           cp ubuntu-base/usr/bin/mawk rootfs/usr/bin/
           cp ubuntu-base/usr/share/misc/pci.ids rootfs/usr/share/misc/ 2>/dev/null || true
 
           # Copy all shared libraries needed by the binaries
-          for lib_dir in lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu lib usr/lib; do
+          for lib_dir in lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu; do
             if [ -d "ubuntu-base/${lib_dir}" ]; then
               cp -a ubuntu-base/${lib_dir}/* rootfs/${lib_dir}/ 2>/dev/null || true
             fi
@@ -299,6 +326,9 @@ jobs:
           cp -r /etc/ssl/certs rootfs/etc/ssl/
           cp /etc/ssl/openssl.cnf rootfs/etc/ssl/ 2>/dev/null || true
           cp -r /usr/share/ca-certificates rootfs/usr/share/
+
+          # Clean up
+          docker rmi temp-deps:latest
 
           # Create OCI image config with tini entrypoint
           cat > config.json << EOF
