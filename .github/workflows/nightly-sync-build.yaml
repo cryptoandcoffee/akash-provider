@@ -310,14 +310,9 @@ jobs:
             BUILD_DATE="$(date -u +'%Y-%m-%d %H:%M UTC')"
             MAIN_SHA="$(echo ${{ needs.check-upstream.outputs.main_sha }} | cut -c1-7)"
 
-            cat > /tmp/readme-update.txt << EOF
-
----
-
-**Last Updated**: ${BUILD_DATE}
-**Latest Release**: \`${LATEST_TAG}\` | **Main Branch**: \`${MAIN_SHA}\`
-
-EOF
+            # Create README update using printf to avoid YAML parsing issues
+            printf "\n---\n\n**Last Updated**: %s\n**Latest Release**: \`%s\` | **Main Branch**: \`%s\`\n\n" \
+              "${BUILD_DATE}" "${LATEST_TAG}" "${MAIN_SHA}" > /tmp/readme-update.txt
 
             # Update README
             if grep -q "^---$" README.md && grep -q "Last Updated" README.md; then
