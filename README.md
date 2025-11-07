@@ -132,8 +132,9 @@ The Akash Provider is licensed under the Apache License 2.0. See the [upstream L
 
 
 
+
 ---
 
-**Last Updated**: 2025-11-07 09:50 UTC
+**Last Updated**: 2025-11-07 09:57 UTC
 **Latest Release**: `v0.10.1` | **Main Branch**: `aa632cd`
 
