@@ -130,12 +130,9 @@ The Akash Provider is licensed under the Apache License 2.0. See the [upstream L
 - **Docker Hub**: https://hub.docker.com/r/cryptoandcoffee/akash-network-provider
 - **GHCR**: https://github.com/cryptoandcoffee/akash-provider/pkgs/container/akash-network-provider
 
----
-
-**Note**: This is an automated build repository. It does not contain source code - workflows clone upstream at runtime for each build.
 
 ---
 
-**Last Updated**: 2025-11-07 08:21 UTC
+**Last Updated**: 2025-11-07 08:57 UTC
 **Latest Release**: `v0.10.1` | **Main Branch**: `aa632cd`
 
