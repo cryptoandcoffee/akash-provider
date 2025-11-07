@@ -57,11 +57,12 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Install crane
+      - name: Install buildah
         run: |
-          curl -L https://github.com/google/go-containerregistry/releases/download/v0.16.1/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /tmp
-          sudo mv /tmp/crane /usr/local/bin/
-          crane version
+          if ! command -v buildah &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y buildah
+          fi
+          buildah --version
 
       - name: Generate build metadata
         run: |
@@ -96,69 +97,55 @@ jobs:
 
           chmod +x ./bin/provider-services
 
+      - name: Check out tracking repo for Dockerfile
+        uses: actions/checkout@v4
+        with:
+          path: dockerfile-repo
+          fetch-depth: 1
+
       - name: Build and push container
         working-directory: ./upstream
         run: |
-          # Create a complete rootfs with Alpine + required tools
-          mkdir -p rootfs
-
-          # Pull and extract alpine base
-          crane export alpine:3.18 - | tar -xC rootfs
-
-          # Install required packages in the rootfs using chroot
-          # Mount proc for apk to work properly
-          sudo mount --bind /proc rootfs/proc || true
-
-          # Install bash, curl, jq, and ca-certificates
-          sudo chroot rootfs /bin/sh -c "apk add --no-cache bash curl jq ca-certificates"
-
-          # Cleanup
-          sudo umount rootfs/proc || true
-          sudo rm -rf rootfs/var/cache/apk/*
-
-          # Add our binary
-          sudo cp ./bin/provider-services rootfs/usr/local/bin/
-          sudo chmod +x rootfs/usr/local/bin/provider-services
-
-          # Create symlink for bash if needed
-          if [ ! -e rootfs/bin/bash ]; then
-            sudo ln -s /usr/bin/bash rootfs/bin/bash || true
-          fi
-
-          # Create tar archive of complete filesystem
-          sudo tar -C rootfs -czf layer.tar.gz .
-          sudo chown $(id -u):$(id -g) layer.tar.gz
-
-          # Auth for crane
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # Copy Dockerfile from tracking repo
+          cp ../dockerfile-repo/Dockerfile ./
 
           if [ "${{ env.IS_TAG }}" == "true" ]; then
-            # Push for releases
+            # Build for releases
             echo "🚀 Pushing release: ${VERSION}" >> $GITHUB_STEP_SUMMARY
-            crane mutate scratch \
-              --append layer.tar.gz \
-              --entrypoint /usr/local/bin/provider-services \
-              --cmd run \
-              --tag ${DOCKERHUB_IMAGE}:${VERSION}
 
-            crane copy ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:${VERSION}
+            buildah bud \
+              --isolation chroot \
+              --build-arg BINARY=bin/provider-services \
+              --tag ${DOCKERHUB_IMAGE}:${VERSION} \
+              --tag ${GHCR_IMAGE}:${VERSION} \
+              .
+
+            # Push version tags
+            buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:${VERSION}
+            buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:${VERSION}
 
             if [ "${{ github.event.inputs.tag_as_latest }}" == "true" ]; then
-              crane tag ${DOCKERHUB_IMAGE}:${VERSION} latest
-              crane tag ${GHCR_IMAGE}:${VERSION} latest
+              # Tag and push as latest
+              buildah tag ${DOCKERHUB_IMAGE}:${VERSION} ${DOCKERHUB_IMAGE}:latest
+              buildah tag ${GHCR_IMAGE}:${VERSION} ${GHCR_IMAGE}:latest
+              buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:latest
+              buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:latest
               echo "✅ Tagged as latest" >> $GITHUB_STEP_SUMMARY
             fi
           else
-            # Push for main branch
+            # Build for main branch
             echo "🚀 Pushing main branch build" >> $GITHUB_STEP_SUMMARY
-            crane mutate scratch \
-              --append layer.tar.gz \
-              --entrypoint /usr/local/bin/provider-services \
-              --cmd run \
-              --tag ${DOCKERHUB_IMAGE}:main
 
-            crane copy ${DOCKERHUB_IMAGE}:main ${GHCR_IMAGE}:main
+            buildah bud \
+              --isolation chroot \
+              --build-arg BINARY=bin/provider-services \
+              --tag ${DOCKERHUB_IMAGE}:main \
+              --tag ${GHCR_IMAGE}:main \
+              .
+
+            # Push main tags
+            buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:main
+            buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:main
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY

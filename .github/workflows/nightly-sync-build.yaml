@@ -126,11 +126,12 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Install crane
+      - name: Install buildah
         run: |
-          curl -L https://github.com/google/go-containerregistry/releases/download/v0.16.1/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /tmp
-          sudo mv /tmp/crane /usr/local/bin/
-          crane version
+          if ! command -v buildah &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y buildah
+          fi
+          buildah --version
 
       - name: Generate build metadata
         run: |
@@ -149,57 +150,38 @@ jobs:
 
           chmod +x ./bin/provider-services
 
+      - name: Check out tracking repo for Dockerfile
+        uses: actions/checkout@v4
+        with:
+          path: dockerfile-repo
+          fetch-depth: 1
+
       - name: Build and push container
         working-directory: ./upstream
         run: |
-          # Create a complete rootfs with Alpine + required tools
-          mkdir -p rootfs
+          # Copy Dockerfile from tracking repo
+          cp ../dockerfile-repo/Dockerfile ./
 
-          # Pull and extract alpine base
-          crane export alpine:3.18 - | tar -xC rootfs
+          # Build with buildah (no Docker daemon needed)
+          buildah bud \
+            --isolation chroot \
+            --build-arg BINARY=bin/provider-services \
+            --tag ${DOCKERHUB_IMAGE}:nightly \
+            --tag ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE} \
+            --tag ${DOCKERHUB_IMAGE}:main \
+            --tag ${GHCR_IMAGE}:nightly \
+            --tag ${GHCR_IMAGE}:nightly-${BUILD_DATE} \
+            --tag ${GHCR_IMAGE}:main \
+            .
 
-          # Install required packages in the rootfs using chroot
-          # Mount proc for apk to work properly
-          sudo mount --bind /proc rootfs/proc || true
+          # Push to registries
+          buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:nightly
+          buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:nightly-${BUILD_DATE}
+          buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:main
 
-          # Install bash, curl, jq, and ca-certificates
-          sudo chroot rootfs /bin/sh -c "apk add --no-cache bash curl jq ca-certificates"
-
-          # Cleanup
-          sudo umount rootfs/proc || true
-          sudo rm -rf rootfs/var/cache/apk/*
-
-          # Add our binary
-          sudo cp ./bin/provider-services rootfs/usr/local/bin/
-          sudo chmod +x rootfs/usr/local/bin/provider-services
-
-          # Create symlink for bash if needed
-          if [ ! -e rootfs/bin/bash ]; then
-            sudo ln -s /usr/bin/bash rootfs/bin/bash || true
-          fi
-
-          # Create tar archive of complete filesystem
-          sudo tar -C rootfs -czf layer.tar.gz .
-          sudo chown $(id -u):$(id -g) layer.tar.gz
-
-          # Auth for crane
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-          # Create base image from scratch with our complete rootfs
-          # Use scratch as base and append our complete layer
-          crane mutate scratch \
-            --append layer.tar.gz \
-            --entrypoint /usr/local/bin/provider-services \
-            --cmd run \
-            --tag ${DOCKERHUB_IMAGE}:nightly
-
-          crane tag ${DOCKERHUB_IMAGE}:nightly nightly-${BUILD_DATE}
-          crane tag ${DOCKERHUB_IMAGE}:nightly main
-
-          crane copy ${DOCKERHUB_IMAGE}:nightly ${GHCR_IMAGE}:nightly
-          crane tag ${GHCR_IMAGE}:nightly nightly-${BUILD_DATE}
-          crane tag ${GHCR_IMAGE}:nightly main
+          buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:nightly
+          buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:nightly-${BUILD_DATE}
+          buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:main
 
   build-and-push-release:
     needs: check-upstream
@@ -224,11 +206,12 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
 
-      - name: Install crane
+      - name: Install buildah
         run: |
-          curl -L https://github.com/google/go-containerregistry/releases/download/v0.16.1/go-containerregistry_Linux_x86_64.tar.gz | tar xz -C /tmp
-          sudo mv /tmp/crane /usr/local/bin/
-          crane version
+          if ! command -v buildah &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y buildah
+          fi
+          buildah --version
 
       - name: Generate build metadata
         run: |
@@ -249,54 +232,34 @@ jobs:
 
           chmod +x ./bin/provider-services
 
+      - name: Check out tracking repo for Dockerfile
+        uses: actions/checkout@v4
+        with:
+          path: dockerfile-repo
+          fetch-depth: 1
+
       - name: Build and push container
         working-directory: ./upstream
         run: |
-          # Create a complete rootfs with Alpine + required tools
-          mkdir -p rootfs
+          # Copy Dockerfile from tracking repo
+          cp ../dockerfile-repo/Dockerfile ./
 
-          # Pull and extract alpine base
-          crane export alpine:3.18 - | tar -xC rootfs
+          # Build with buildah (no Docker daemon needed)
+          buildah bud \
+            --isolation chroot \
+            --build-arg BINARY=bin/provider-services \
+            --tag ${DOCKERHUB_IMAGE}:${VERSION} \
+            --tag ${DOCKERHUB_IMAGE}:latest \
+            --tag ${GHCR_IMAGE}:${VERSION} \
+            --tag ${GHCR_IMAGE}:latest \
+            .
 
-          # Install required packages in the rootfs using chroot
-          # Mount proc for apk to work properly
-          sudo mount --bind /proc rootfs/proc || true
+          # Push to registries
+          buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:${VERSION}
+          buildah push --creds "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" ${DOCKERHUB_IMAGE}:latest
 
-          # Install bash, curl, jq, and ca-certificates
-          sudo chroot rootfs /bin/sh -c "apk add --no-cache bash curl jq ca-certificates"
-
-          # Cleanup
-          sudo umount rootfs/proc || true
-          sudo rm -rf rootfs/var/cache/apk/*
-
-          # Add our binary
-          sudo cp ./bin/provider-services rootfs/usr/local/bin/
-          sudo chmod +x rootfs/usr/local/bin/provider-services
-
-          # Create symlink for bash if needed
-          if [ ! -e rootfs/bin/bash ]; then
-            sudo ln -s /usr/bin/bash rootfs/bin/bash || true
-          fi
-
-          # Create tar archive of complete filesystem
-          sudo tar -C rootfs -czf layer.tar.gz .
-          sudo chown $(id -u):$(id -g) layer.tar.gz
-
-          # Auth for crane
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | crane auth login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-          # Create base image from scratch with our complete rootfs
-          crane mutate scratch \
-            --append layer.tar.gz \
-            --entrypoint /usr/local/bin/provider-services \
-            --cmd run \
-            --tag ${DOCKERHUB_IMAGE}:${VERSION}
-
-          crane tag ${DOCKERHUB_IMAGE}:${VERSION} latest
-
-          crane copy ${DOCKERHUB_IMAGE}:${VERSION} ${GHCR_IMAGE}:${VERSION}
-          crane tag ${GHCR_IMAGE}:${VERSION} latest
+          buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:${VERSION}
+          buildah push --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" ${GHCR_IMAGE}:latest
 
   summary:
     needs: [check-upstream, build-and-push-main, build-and-push-release]
