@@ -40,8 +40,16 @@ jobs:
 
       - name: Clone upstream provider
         run: |
-          git clone --depth 1 --branch ${{ steps.determine_ref.outputs.ref }} https://github.com/${{ env.UPSTREAM_REPO }}.git upstream || \
-          git clone https://github.com/${{ env.UPSTREAM_REPO }}.git upstream && cd upstream && git checkout ${{ steps.determine_ref.outputs.ref }}
+          if git clone --depth 1 --branch ${{ steps.determine_ref.outputs.ref }} https://github.com/${{ env.UPSTREAM_REPO }}.git upstream; then
+            echo "Shallow clone succeeded"
+          else
+            echo "Shallow clone failed, trying full clone"
+            rm -rf upstream
+            git clone https://github.com/${{ env.UPSTREAM_REPO }}.git upstream
+            cd upstream
+            git checkout ${{ steps.determine_ref.outputs.ref }}
+            cd ..
+          fi
           cd upstream
           echo "UPSTREAM_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "📦 Cloned upstream at $(git rev-parse --short HEAD)" >> $GITHUB_STEP_SUMMARY
