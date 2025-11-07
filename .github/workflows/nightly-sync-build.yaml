@@ -290,48 +290,64 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update README with published versions
-        if: needs.check-upstream.outputs.should_build_main == 'true' || needs.check-upstream.outputs.should_build_release == 'true'
-        run: |
-          # Update the "Last Published" section in README
-          LATEST_TAG="${{ needs.check-upstream.outputs.latest_tag }}"
-          BUILD_DATE="$(date -u +'%Y-%m-%d %H:%M UTC')"
-          MAIN_SHA="$(echo ${{ needs.check-upstream.outputs.main_sha }} | cut -c1-7)"
-
-          # Create a badge-style status line
-          cat > /tmp/readme-update.txt << EOF
-
-          ---
-
-          **Last Updated**: ${BUILD_DATE}
-          **Latest Release**: \`${LATEST_TAG}\` | **Main Branch**: \`${MAIN_SHA}\`
-
-          EOF
-
-          # Check if the status section exists, if not append it
-          if grep -q "^---$" README.md && grep -q "Last Updated" README.md; then
-            # Replace existing status section (from first --- to end of file)
-            sed -i '/^---$/,$d' README.md
-            cat /tmp/readme-update.txt >> README.md
-          else
-            # Append new status section
-            cat /tmp/readme-update.txt >> README.md
-          fi
-
       - name: Commit README updates
         if: needs.check-upstream.outputs.should_build_main == 'true' || needs.check-upstream.outputs.should_build_release == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase
-          git add README.md
-          if git diff --cached --quiet; then
-            echo "No README changes to commit"
-          else
+
+          # Retry logic for handling concurrent updates
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            # Fetch latest changes
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Regenerate README update with fresh data
+            LATEST_TAG="${{ needs.check-upstream.outputs.latest_tag }}"
+            BUILD_DATE="$(date -u +'%Y-%m-%d %H:%M UTC')"
+            MAIN_SHA="$(echo ${{ needs.check-upstream.outputs.main_sha }} | cut -c1-7)"
+
+            cat > /tmp/readme-update.txt << EOF
+
+---
+
+**Last Updated**: ${BUILD_DATE}
+**Latest Release**: \`${LATEST_TAG}\` | **Main Branch**: \`${MAIN_SHA}\`
+
+EOF
+
+            # Update README
+            if grep -q "^---$" README.md && grep -q "Last Updated" README.md; then
+              sed -i '/^---$/,$d' README.md
+              cat /tmp/readme-update.txt >> README.md
+            else
+              cat /tmp/readme-update.txt >> README.md
+            fi
+
+            # Commit and push with retry
+            git add README.md
+            if git diff --cached --quiet; then
+              echo "No README changes to commit"
+              exit 0
+            fi
+
             git commit -m "docs: update README with published versions [skip ci]"
-            git push
-            echo "✅ README updated with latest versions" >> $GITHUB_STEP_SUMMARY
-          fi
+
+            if git push origin main; then
+              echo "✅ README updated with latest versions" >> $GITHUB_STEP_SUMMARY
+              exit 0
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "⚠️ Push failed, retrying ($RETRY_COUNT/$MAX_RETRIES)..." >> $GITHUB_STEP_SUMMARY
+              sleep 5
+            fi
+          done
+
+          echo "❌ Failed to update README after $MAX_RETRIES attempts" >> $GITHUB_STEP_SUMMARY
+          exit 1
 
       - name: Generate summary
         run: |
