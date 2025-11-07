@@ -5,6 +5,8 @@ name: Test Build Methods (One-Time Test)
 #
 # MANUAL TRIGGER ONLY - Run once to find working build method
 # Results will show which methods work without Docker daemon access
+#
+# Each job builds its own binary (NO ARTIFACTS - saves quota and is faster)
 
 on:
   workflow_dispatch:
@@ -18,31 +20,23 @@ env:
   UPSTREAM_REPO: akash-network/provider
 
 jobs:
-  # Build the binary once and share it across all test jobs
-  build-binary:
+  # TEST 1: Kaniko (Highest Priority - Designed for Containerized Environments)
+  test-kaniko:
     runs-on: self-hosted
+    continue-on-error: true
     steps:
-      - name: Clone upstream provider
+      - name: Clone and build binary
         run: |
-          rm -rf upstream-test
-          git clone --depth 1 --branch main https://github.com/${{ env.UPSTREAM_REPO }}.git upstream-test
-          cd upstream-test
-          echo "UPSTREAM_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          rm -rf /tmp/test-kaniko
+          mkdir -p /tmp/test-kaniko
+          cd /tmp/test-kaniko
 
-      - name: Detect Go version
-        working-directory: ./upstream-test
-        run: |
+          git clone --depth 1 --branch main https://github.com/${{ env.UPSTREAM_REPO }}.git upstream
+          cd upstream
+
           toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
-          echo "GOVERSION=${toolchain}" >> $GITHUB_ENV
+          export GOVERSION=${toolchain}
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GOVERSION }}
-
-      - name: Build provider-services binary
-        working-directory: ./upstream-test
-        run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -tags "osusergo,netgo,static_build" \
             -ldflags="-s -w -extldflags=-static" \
@@ -52,25 +46,8 @@ jobs:
           chmod +x ./provider-services
           ls -lh provider-services
 
-      - name: Upload binary as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: provider-services-binary
-          path: upstream-test/provider-services
-          retention-days: 1
-
-  # TEST 1: Kaniko (Highest Priority - Designed for Containerized Environments)
-  test-kaniko:
-    needs: build-binary
-    runs-on: self-hosted
-    continue-on-error: true
-    steps:
-      - name: Download binary
-        uses: actions/download-artifact@v4
-        with:
-          name: provider-services-binary
-
       - name: Create test Dockerfile
+        working-directory: /tmp/test-kaniko/upstream
         run: |
           cat > Dockerfile << 'EOF'
           FROM ubuntu:noble
@@ -81,6 +58,7 @@ jobs:
           EOF
 
       - name: Install and test Kaniko
+        working-directory: /tmp/test-kaniko/upstream
         run: |
           set -x
 
@@ -113,16 +91,30 @@ jobs:
 
   # TEST 2: Buildah (High Priority - Red Hat's Daemonless Builder)
   test-buildah:
-    needs: build-binary
     runs-on: self-hosted
     continue-on-error: true
     steps:
-      - name: Download binary
-        uses: actions/download-artifact@v4
-        with:
-          name: provider-services-binary
+      - name: Clone and build binary
+        run: |
+          rm -rf /tmp/test-buildah
+          mkdir -p /tmp/test-buildah
+          cd /tmp/test-buildah
+
+          git clone --depth 1 --branch main https://github.com/${{ env.UPSTREAM_REPO }}.git upstream
+          cd upstream
+
+          toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -tags "osusergo,netgo,static_build" \
+            -ldflags="-s -w -extldflags=-static" \
+            -o ./provider-services \
+            ./cmd/provider-services
+
+          chmod +x ./provider-services
 
       - name: Create test Dockerfile
+        working-directory: /tmp/test-buildah/upstream
         run: |
           cat > Dockerfile << 'EOF'
           FROM ubuntu:noble
@@ -133,6 +125,7 @@ jobs:
           EOF
 
       - name: Install and test Buildah
+        working-directory: /tmp/test-buildah/upstream
         run: |
           set -x
 
@@ -152,7 +145,7 @@ jobs:
       - name: Report result
         if: always()
         run: |
-          if buildah images | grep -q test-buildah; then
+          if buildah images 2>/dev/null | grep -q test-buildah; then
             echo "## ✅ Buildah: SUCCESS" >> $GITHUB_STEP_SUMMARY
             buildah images | grep test-buildah >> $GITHUB_STEP_SUMMARY
           else
@@ -161,16 +154,30 @@ jobs:
 
   # TEST 3: BuildKit Daemonless (High Priority - Ephemeral BuildKit)
   test-buildkit-daemonless:
-    needs: build-binary
     runs-on: self-hosted
     continue-on-error: true
     steps:
-      - name: Download binary
-        uses: actions/download-artifact@v4
-        with:
-          name: provider-services-binary
+      - name: Clone and build binary
+        run: |
+          rm -rf /tmp/test-buildkit-daemonless
+          mkdir -p /tmp/test-buildkit-daemonless
+          cd /tmp/test-buildkit-daemonless
+
+          git clone --depth 1 --branch main https://github.com/${{ env.UPSTREAM_REPO }}.git upstream
+          cd upstream
+
+          toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -tags "osusergo,netgo,static_build" \
+            -ldflags="-s -w -extldflags=-static" \
+            -o ./provider-services \
+            ./cmd/provider-services
+
+          chmod +x ./provider-services
 
       - name: Create test Dockerfile
+        working-directory: /tmp/test-buildkit-daemonless/upstream
         run: |
           cat > Dockerfile << 'EOF'
           FROM ubuntu:noble
@@ -181,6 +188,7 @@ jobs:
           EOF
 
       - name: Install and test BuildKit Daemonless
+        working-directory: /tmp/test-buildkit-daemonless/upstream
         run: |
           set -x
 
@@ -197,34 +205,48 @@ jobs:
             --frontend dockerfile.v0 \
             --local context=. \
             --local dockerfile=. \
-            --output type=oci,dest=/tmp/test-buildkit.tar
+            --output type=oci,dest=/tmp/test-buildkit-daemonless.tar
 
           echo "✅ BUILDKIT DAEMONLESS BUILD SUCCEEDED" >> $GITHUB_STEP_SUMMARY
-          ls -lh /tmp/test-buildkit.tar
+          ls -lh /tmp/test-buildkit-daemonless.tar
         continue-on-error: true
 
       - name: Report result
         if: always()
         run: |
-          if [ -f /tmp/test-buildkit.tar ]; then
+          if [ -f /tmp/test-buildkit-daemonless.tar ]; then
             echo "## ✅ BuildKit Daemonless: SUCCESS" >> $GITHUB_STEP_SUMMARY
-            ls -lh /tmp/test-buildkit.tar >> $GITHUB_STEP_SUMMARY
+            ls -lh /tmp/test-buildkit-daemonless.tar >> $GITHUB_STEP_SUMMARY
           else
             echo "## ❌ BuildKit Daemonless: FAILED" >> $GITHUB_STEP_SUMMARY
           fi
 
   # TEST 4: Podman (High Priority - Daemonless by Default)
   test-podman:
-    needs: build-binary
     runs-on: self-hosted
     continue-on-error: true
     steps:
-      - name: Download binary
-        uses: actions/download-artifact@v4
-        with:
-          name: provider-services-binary
+      - name: Clone and build binary
+        run: |
+          rm -rf /tmp/test-podman
+          mkdir -p /tmp/test-podman
+          cd /tmp/test-podman
+
+          git clone --depth 1 --branch main https://github.com/${{ env.UPSTREAM_REPO }}.git upstream
+          cd upstream
+
+          toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -tags "osusergo,netgo,static_build" \
+            -ldflags="-s -w -extldflags=-static" \
+            -o ./provider-services \
+            ./cmd/provider-services
+
+          chmod +x ./provider-services
 
       - name: Create test Dockerfile
+        working-directory: /tmp/test-podman/upstream
         run: |
           cat > Dockerfile << 'EOF'
           FROM ubuntu:noble
@@ -235,6 +257,7 @@ jobs:
           EOF
 
       - name: Install and test Podman
+        working-directory: /tmp/test-podman/upstream
         run: |
           set -x
 
@@ -254,238 +277,39 @@ jobs:
       - name: Report result
         if: always()
         run: |
-          if podman images | grep -q test-podman; then
+          if podman images 2>/dev/null | grep -q test-podman; then
             echo "## ✅ Podman: SUCCESS" >> $GITHUB_STEP_SUMMARY
             podman images | grep test-podman >> $GITHUB_STEP_SUMMARY
           else
             echo "## ❌ Podman: FAILED" >> $GITHUB_STEP_SUMMARY
           fi
 
-  # TEST 5: Nerdctl (Medium Priority - Containerd-based)
-  test-nerdctl:
-    needs: build-binary
-    runs-on: self-hosted
-    continue-on-error: true
-    steps:
-      - name: Download binary
-        uses: actions/download-artifact@v4
-        with:
-          name: provider-services-binary
-
-      - name: Create test Dockerfile
-        run: |
-          cat > Dockerfile << 'EOF'
-          FROM ubuntu:noble
-          COPY provider-services /usr/bin/
-          RUN apt-get update && apt-get install -y curl tini jq bc netcat-traditional mawk ca-certificates pci.ids && rm -rf /var/lib/apt/lists/*
-          ENTRYPOINT ["/usr/bin/tini", "--"]
-          CMD ["provider-services", "--help"]
-          EOF
-
-      - name: Install and test Nerdctl
-        run: |
-          set -x
-
-          # Check if containerd is available
-          if ! command -v containerd &> /dev/null; then
-            echo "Containerd not available, installing..."
-            sudo apt-get update
-            sudo apt-get install -y containerd || echo "Failed to install containerd"
-          fi
-
-          # Download nerdctl
-          wget -q https://github.com/containerd/nerdctl/releases/download/v2.0.2/nerdctl-2.0.2-linux-amd64.tar.gz
-          tar xzf nerdctl-*.tar.gz
-          sudo mv nerdctl /usr/local/bin/
-
-          # Verify installation
-          nerdctl --version
-
-          # Try to build
-          nerdctl build -t test-nerdctl:latest .
-
-          echo "✅ NERDCTL BUILD SUCCEEDED" >> $GITHUB_STEP_SUMMARY
-        continue-on-error: true
-
-      - name: Report result
-        if: always()
-        run: |
-          if nerdctl images 2>/dev/null | grep -q test-nerdctl; then
-            echo "## ✅ Nerdctl: SUCCESS" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "## ❌ Nerdctl: FAILED" >> $GITHUB_STEP_SUMMARY
-            echo "Likely requires containerd daemon" >> $GITHUB_STEP_SUMMARY
-          fi
-
-  # TEST 6: Img (Medium Priority - Unmaintained but May Work)
-  test-img:
-    needs: build-binary
-    runs-on: self-hosted
-    continue-on-error: true
-    steps:
-      - name: Download binary
-        uses: actions/download-artifact@v4
-        with:
-          name: provider-services-binary
-
-      - name: Create test Dockerfile
-        run: |
-          cat > Dockerfile << 'EOF'
-          FROM ubuntu:noble
-          COPY provider-services /usr/bin/
-          RUN apt-get update && apt-get install -y curl tini jq bc netcat-traditional mawk ca-certificates pci.ids && rm -rf /var/lib/apt/lists/*
-          ENTRYPOINT ["/usr/bin/tini", "--"]
-          CMD ["provider-services", "--help"]
-          EOF
-
-      - name: Install and test Img
-        run: |
-          set -x
-
-          # Download img (unmaintained but might work)
-          wget -q https://github.com/genuinetools/img/releases/download/v0.5.11/img-linux-amd64
-          chmod +x img-linux-amd64
-          sudo mv img-linux-amd64 /usr/local/bin/img
-
-          # Verify installation
-          img version
-
-          # Try to build
-          img build -t test-img:latest .
-
-          echo "✅ IMG BUILD SUCCEEDED" >> $GITHUB_STEP_SUMMARY
-        continue-on-error: true
-
-      - name: Report result
-        if: always()
-        run: |
-          if img ls 2>/dev/null | grep -q test-img; then
-            echo "## ✅ Img: SUCCESS" >> $GITHUB_STEP_SUMMARY
-            echo "(Note: img is unmaintained since 2021)" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "## ❌ Img: FAILED" >> $GITHUB_STEP_SUMMARY
-          fi
-
-  # TEST 7: BuildKit Standalone Daemon (Medium Priority)
-  test-buildkit-standalone:
-    needs: build-binary
-    runs-on: self-hosted
-    continue-on-error: true
-    steps:
-      - name: Download binary
-        uses: actions/download-artifact@v4
-        with:
-          name: provider-services-binary
-
-      - name: Create test Dockerfile
-        run: |
-          cat > Dockerfile << 'EOF'
-          FROM ubuntu:noble
-          COPY provider-services /usr/bin/
-          RUN apt-get update && apt-get install -y curl tini jq bc netcat-traditional mawk ca-certificates pci.ids && rm -rf /var/lib/apt/lists/*
-          ENTRYPOINT ["/usr/bin/tini", "--"]
-          CMD ["provider-services", "--help"]
-          EOF
-
-      - name: Install and test BuildKit Standalone
-        run: |
-          set -x
-
-          # Download buildkit if not already installed
-          if ! command -v buildkitd &> /dev/null; then
-            wget -q https://github.com/moby/buildkit/releases/download/v0.16.0/buildkit-v0.16.0.linux-amd64.tar.gz
-            tar xzf buildkit-*.tar.gz
-            sudo mv bin/* /usr/local/bin/
-          fi
-
-          # Try to start buildkitd in background
-          mkdir -p /tmp/buildkit-test
-          buildkitd --addr unix:///tmp/buildkit-test/buildkitd.sock --root /tmp/buildkit-test/root &
-          DAEMON_PID=$!
-          sleep 5
-
-          # Build with buildctl
-          buildctl --addr unix:///tmp/buildkit-test/buildkitd.sock build \
-            --frontend dockerfile.v0 \
-            --local context=. \
-            --local dockerfile=. \
-            --output type=oci,dest=/tmp/test-buildkit-standalone.tar
-
-          # Cleanup daemon
-          kill $DAEMON_PID || true
-
-          echo "✅ BUILDKIT STANDALONE BUILD SUCCEEDED" >> $GITHUB_STEP_SUMMARY
-          ls -lh /tmp/test-buildkit-standalone.tar
-        continue-on-error: true
-
-      - name: Report result
-        if: always()
-        run: |
-          if [ -f /tmp/test-buildkit-standalone.tar ]; then
-            echo "## ✅ BuildKit Standalone: SUCCESS" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "## ❌ BuildKit Standalone: FAILED" >> $GITHUB_STEP_SUMMARY
-          fi
-
-  # TEST 8: Crane (Image Manipulation - Not a Builder)
-  test-crane:
-    needs: build-binary
-    runs-on: self-hosted
-    continue-on-error: true
-    steps:
-      - name: Test Crane (Image Manipulation)
-        run: |
-          set -x
-
-          # Download crane
-          wget -q https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz
-          tar xzf go-containerregistry_*.tar.gz crane
-          sudo mv crane /usr/local/bin/
-
-          # Crane can't build from Dockerfile, but can manipulate images
-          # Test basic operations
-          crane version
-          crane catalog gcr.io/distroless || echo "Crane works but needs registry access"
-
-          echo "## ⚠️ Crane: NOT A BUILDER" >> $GITHUB_STEP_SUMMARY
-          echo "Crane is for image manipulation, not building from Dockerfile" >> $GITHUB_STEP_SUMMARY
-          echo "Can be used to append layers to existing images" >> $GITHUB_STEP_SUMMARY
-        continue-on-error: true
-
-  # TEST 9: Skopeo (Image Manipulation - Not a Builder)
-  test-skopeo:
-    needs: build-binary
-    runs-on: self-hosted
-    continue-on-error: true
-    steps:
-      - name: Test Skopeo (Image Manipulation)
-        run: |
-          set -x
-
-          # Install skopeo
-          sudo apt-get update
-          sudo apt-get install -y skopeo || echo "Failed to install skopeo"
-
-          # Skopeo can't build, but can copy/inspect images
-          skopeo --version
-          skopeo inspect docker://alpine:latest || echo "Skopeo works but needs registry access"
-
-          echo "## ⚠️ Skopeo: NOT A BUILDER" >> $GITHUB_STEP_SUMMARY
-          echo "Skopeo is for image copying/inspection, not building from Dockerfile" >> $GITHUB_STEP_SUMMARY
-        continue-on-error: true
-
-  # TEST 10: Docker Build (Expected to Fail - Baseline)
+  # TEST 5: Docker Build (Expected to Fail - Baseline)
   test-docker-build:
-    needs: build-binary
     runs-on: self-hosted
     continue-on-error: true
     steps:
-      - name: Download binary
-        uses: actions/download-artifact@v4
-        with:
-          name: provider-services-binary
+      - name: Clone and build binary
+        run: |
+          rm -rf /tmp/test-docker
+          mkdir -p /tmp/test-docker
+          cd /tmp/test-docker
+
+          git clone --depth 1 --branch main https://github.com/${{ env.UPSTREAM_REPO }}.git upstream
+          cd upstream
+
+          toolchain=$(./script/tools.sh gotoolchain | sed 's/go*//')
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -tags "osusergo,netgo,static_build" \
+            -ldflags="-s -w -extldflags=-static" \
+            -o ./provider-services \
+            ./cmd/provider-services
+
+          chmod +x ./provider-services
 
       - name: Create test Dockerfile
+        working-directory: /tmp/test-docker/upstream
         run: |
           cat > Dockerfile << 'EOF'
           FROM ubuntu:noble
@@ -496,6 +320,7 @@ jobs:
           EOF
 
       - name: Test Docker Build (Expected to Fail)
+        working-directory: /tmp/test-docker/upstream
         run: |
           set -x
 
@@ -519,11 +344,6 @@ jobs:
       - test-buildah
       - test-buildkit-daemonless
       - test-podman
-      - test-nerdctl
-      - test-img
-      - test-buildkit-standalone
-      - test-crane
-      - test-skopeo
       - test-docker-build
     runs-on: self-hosted
     if: always()
@@ -534,6 +354,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "This workflow tested multiple container build methods to find which work" >> $GITHUB_STEP_SUMMARY
           echo "with containerized self-hosted GitHub Actions runners." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**No artifacts used - each job built its own binary for faster execution**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Results Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -555,7 +377,4 @@ jobs:
           echo "- Buildah: ${{ needs.test-buildah.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- BuildKit Daemonless: ${{ needs.test-buildkit-daemonless.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Podman: ${{ needs.test-podman.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Nerdctl: ${{ needs.test-nerdctl.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Img: ${{ needs.test-img.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- BuildKit Standalone: ${{ needs.test-buildkit-standalone.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Docker Build (baseline): ${{ needs.test-docker-build.result }}" >> $GITHUB_STEP_SUMMARY
